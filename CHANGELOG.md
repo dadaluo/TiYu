@@ -3,6 +3,33 @@
 本文件记录题屿（TiYu）每个版本的变更明细。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本（MAJOR.MINOR.PATCH）。
 
 ## [Unreleased]
+
+## [2.17.0] - 2026-09-18
+
+### 新功能 —— Markdown 解析排版
+
+- 刷题、搜索结果和错题回顾的解析区统一使用 Markdown 渲染，
+  支持标题、段落、有序/无序列表与引用等结构，长解析层次更清晰。
+- Markdown 文字沿用当前阅读字体和主题色，与既有解析卡片视觉保持一致。
+
+### 变更 —— 构建工具链与依赖升级
+
+- Android Gradle Plugin `8.13.2 → 9.1.1`、Gradle `8.14.3 → 9.7.1`、
+  Kotlin `2.2.20 → 2.4.20`、KSP `2.2.20-2.0.4 → 2.3.10`，
+  `compileSdk 36 → 37`；迁移至 AGP 9 内置 Kotlin，移除独立
+  `org.jetbrains.kotlin.android` 插件和旧 `kotlinOptions` 配置。
+- Compose BOM 升级至 `2026.09.00`；Navigation `2.10.1`、Room `2.8.5`、
+  DataStore `1.2.1`、kotlinx serialization/coroutines `1.11.0`；
+  新增 multiplatform-markdown-renderer `0.45.0`。
+- 保留 v2.16.0 的 PaddleOCR + MNN、CameraX、AlarmManager 提醒链路和
+  ARM 双 ABI 构建配置；Gradle wrapper 使用官方 HTTPS 分发地址。
+
+### 工程
+
+- 仓库、README 徽章/下载链接、应用内检查更新与签名配置默认目标
+  迁移至 `dadaluo/TiYu`。
+- 新增驾考题库抓取与题屿导入 ZIP 打包脚本，生成数据目录默认忽略。
+
 ## [2.16.0] - 2026-09-17
 
 ### 安装包瘦身：OCR 模型按需下载（第四十九轮）
@@ -1146,9 +1173,12 @@ OCR 错识/漏识、希望支持斜拍并自建拍照界面。本轮逐一解决
 - 转场动画重叠、滑杆不可拖、列表末项被底栏遮挡（contentPadding 130dp）等十余项体验问题
 - 首轮 GitHub Actions 31 个编译错误全部修复（context-parameters 编译器参数、`collectAsState` initial、`awaitFrame` → `withFrameNanos`、Lens 解耦 shapes 等）
 
-[Unreleased]: https://github.com/Everett406/DroneQuiz/compare/v2.2.0...HEAD
-[2.2.0]: https://github.com/Everett406/DroneQuiz/compare/v2.1.0...v2.2.0
-[2.1.0]: https://github.com/Everett406/DroneQuiz/compare/v2.0.2...v2.1.0
-[2.0.2]: https://github.com/Everett406/DroneQuiz/compare/v2.0.1...v2.0.2
-[2.0.1]: https://github.com/Everett406/DroneQuiz/compare/v2.0.0...v2.0.1
-[2.0.0]: https://github.com/Everett406/DroneQuiz/releases/tag/v2.0
+[Unreleased]: https://github.com/dadaluo/TiYu/compare/v2.17.0...HEAD
+[2.17.0]: https://github.com/dadaluo/TiYu/compare/v2.16.0...v2.17.0
+[2.16.0]: https://github.com/dadaluo/TiYu/compare/v2.15.0...v2.16.0
+[2.12.0]: https://github.com/dadaluo/TiYu/compare/v2.11.5...v2.12.0
+[2.2.0]: https://github.com/dadaluo/TiYu/compare/v2.1.0...v2.2.0
+[2.1.0]: https://github.com/dadaluo/TiYu/compare/v2.0.2...v2.1.0
+[2.0.2]: https://github.com/dadaluo/TiYu/compare/v2.0.1...v2.0.2
+[2.0.1]: https://github.com/dadaluo/TiYu/compare/v2.0.0...v2.0.1
+[2.0.0]: https://github.com/dadaluo/TiYu/releases/tag/v2.0

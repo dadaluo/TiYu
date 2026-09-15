@@ -4,16 +4,16 @@
 
 **题屿 TiYu**（原「无人机装调题库 DroneQuiz」，v2.8.8 起更名）— Android 原生刷题 / 模考 / 错题本应用 · Jetpack Compose · 液态玻璃 UI
 
-[![Release](https://img.shields.io/github/v/release/Everett406/TiYu?style=flat-square)](https://github.com/Everett406/TiYu/releases)
-[![Build APK](https://github.com/Everett406/TiYu/actions/workflows/build.yml/badge.svg)](https://github.com/Everett406/TiYu/actions/workflows/build.yml)
-[![License](https://img.shields.io/github/license/Everett406/TiYu?style=flat-square)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/dadaluo/TiYu?style=flat-square)](https://github.com/dadaluo/TiYu/releases)
+[![Build APK](https://github.com/dadaluo/TiYu/actions/workflows/build.yml/badge.svg)](https://github.com/dadaluo/TiYu/actions/workflows/build.yml)
+[![License](https://img.shields.io/github/license/dadaluo/TiYu?style=flat-square)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Android%2012%2B-3DDC84?style=flat-square)
-![Kotlin](https://img.shields.io/badge/Kotlin-2.2.20-7F52FF?style=flat-square)
+![Kotlin](https://img.shields.io/badge/Kotlin-2.4.20-7F52FF?style=flat-square)
 
 内置《无人机装调题库（含解析）》**800 题**（单选 640 / 判断 160），
 支持多题库管理与自定义题库导入（CSV / ZIP，含图片题，五种题型）、模考自动阅卷、错题强化训练与每日学习提醒。
 
-[下载最新 APK](https://github.com/Everett406/TiYu/releases/latest) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/Everett406/TiYu/issues)
+[下载最新 APK](https://github.com/dadaluo/TiYu/releases/latest) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/dadaluo/TiYu/issues)
 
 </div>
 
@@ -64,12 +64,12 @@
 | 页面 | 功能要点 |
 |------|----------|
 | **首页** | 时间问候 + 昵称、学习进度环、预估通过率条、近 7 日刷题量柱状图 / 正确率折线（Canvas 自绘）、连续打卡双卡、错题提示、上次模考成绩速览；全局壁纸之上铺主题纱（wallScrim）保证可读性 |
-| **刷题** | **配置入口页**（`PracticeConfig.kt`：题型多选 / 筛选 chips、顺序 / 随机双模式、「将接续上次进度 · 第 N/M 题」实时提示、重新开始胶囊按钮）→ 全屏刷题页（`HorizontalPager` 左右滑题、点选即判、答错抖动 + 解析弹簧展开、题号面板单一数据源、自动切题、**题目图片**小图点开大图）；**顺序与随机两套进度槽独立记忆，且按题库隔离**（v2.7.4 双槽 + v2.8.8 读口校验，见下文）；**顺序模式循环补漏**（v2.8.6：刷到末题自动开新一轮，只挑没刷过的题）；**防沉迷**（v2.8.6：连续刷题 20 分钟弹窗提醒看远处，考试不受影响）；重新开始按钮带二次确认 |
+| **刷题** | **配置入口页**（`PracticeConfig.kt`：题型多选 / 筛选 chips、顺序 / 随机双模式、「将接续上次进度 · 第 N/M 题」实时提示、重新开始胶囊按钮）→ 全屏刷题页（`HorizontalPager` 左右滑题、点选即判、答错抖动 + **Markdown 解析**弹簧展开、题号面板单一数据源、自动切题、**题目图片**小图点开大图）；**顺序与随机两套进度槽独立记忆，且按题库隔离**（v2.7.4 双槽 + v2.8.8 读口校验，见下文）；**顺序模式循环补漏**（v2.8.6：刷到末题自动开新一轮，只挑没刷过的题）；**防沉迷**（v2.8.6：连续刷题 20 分钟弹窗提醒看远处，考试不受影响）；重新开始按钮带二次确认 |
 | **模考** | 题数、时长、及格分（合格线）可拖滑杆配置；**题型构成**在高级选项内（自动按库占比配比 / 手动比例滑杆联动 / 拖拽排序，v2.8.3–2.8.4）；倒计时（< 60s 红色脉冲）、到时自动交卷、交卷确认、玻璃答题卡面板（按题型分段 + 点号跳题）、自动阅卷；**已完成历史记录可单击回看成绩页**（数据库按 examId 重建，v2.7.4）；进行中记录可继续 / 放弃 / 删除 |
 | **模考成绩页** | 得分 / 用时 / 正误统计、**合格线回显**（开考时设定的分数定格存档，v2.8.6）、错题解析懒加载列表（`LazyColumn` 滚动流畅，v2.7.4 优化）、右上角浅色「三点」删除本次记录（**每周限删 2 次**，ISO 周自动重置，配额弹窗告知） |
 | **错题本** | 答错自动收录、「连续答对 N 次」三档移除策略、错题特训入口（不占用刷题进度槽）、分类筛选胶囊、展开解析、像素级连续映射滚动把手、条目删除（30dp 触达区 + 缩放淡出 / 其余条目弹性靠拢动画，v2.8.7） |
-| **搜索** | 题干 / 选项 / 解析全文检索、搜索历史（最多 8 条）、结果解析弹簧展开动画 |
-| **设置** | 主题三档、字号四档、**阅读字体四款**（手机自带 / 思源黑体 / 思源宋体 / 霞鹜文楷，内置子集化字体文件）、刷题顺序、自动切题、及格分滑杆、错题移除阈值、每日提醒（WorkManager，刷过当天不打扰）、**防沉迷**（连续刷题 20 分钟提醒，考试不受影响）、壁纸（内置 4 张 + 自定义 + 可选模糊）、昵称、底栏玻璃模糊三档、**题库管理**（多题库切换 / 导入 CSV·ZIP / 重命名 / 删除 / 清空恢复，带图题目支持）、清空学习记录、画面特效开关、**使用引导**（题库管理与关于之间，随时重走导览）、**关于**（底部弹窗：应用介绍 / 检查更新 / 请喝奶茶） |
+| **搜索** | 题干 / 选项 / 解析全文检索、搜索历史（最多 8 条）、结果解析弹簧展开动画与 Markdown 排版 |
+| **设置** | 主题三档、字号四档、**阅读字体四款**（手机自带 / 思源黑体 / 思源宋体 / 霞鹜文楷，内置子集化字体文件）、刷题顺序、自动切题、及格分滑杆、错题移除阈值、每日提醒（AlarmManager 精确闹钟，刷过当天不打扰）、**防沉迷**（连续刷题 20 分钟提醒，考试不受影响）、壁纸（内置 4 张 + 自定义 + 可选模糊）、昵称、底栏玻璃模糊三档、**题库管理**（多题库切换 / 导入 CSV·ZIP / 重命名 / 删除 / 清空恢复，带图题目支持）、清空学习记录、画面特效开关、**使用引导**（题库管理与关于之间，随时重走导览）、**关于**（底部弹窗：应用介绍 / 检查更新 / 请喝奶茶） |
 
 ### 交互与视觉
 
@@ -101,7 +101,7 @@
 
 ### 安装步骤
 
-1. 从 [Releases](https://github.com/Everett406/TiYu/releases/latest) 下载最新 `TiYu-x.y.z.apk`；
+1. 从 [Releases](https://github.com/dadaluo/TiYu/releases/latest) 下载最新 `TiYu-x.y.z.apk`；
 2. 直接安装。**v2.0.2 起所有版本使用同一固定签名，之后升级均可直接覆盖安装，无需卸载旧版**；
    - 若从 v2.0.x 旧签名版本升级，需先卸载一次旧版（签名不同导致）；
 3. 首次启动若提示未知来源，按系统引导授权即可。
@@ -121,19 +121,22 @@
 
 | 类别 | 组件 | 版本 |
 |------|------|------|
-| 语言 | Kotlin（启用 `-Xcontext-parameters`） | 2.2.20 |
-| UI | Jetpack Compose（BOM）+ Material 3 | 2025.06.01 |
-| 导航 | androidx.navigation:navigation-compose | 2.9.8 |
-| 数据库 | Room + KSP | 2.8.4 |
-| 偏好存储 | DataStore Preferences | 1.1.7 |
-| 后台任务 | WorkManager | 2.10.5 |
-| 序列化 | kotlinx-serialization-json | 1.9.0 |
-| 协程 | kotlinx-coroutines-android | 1.10.2 |
-| 构建 | AGP / Gradle | 8.13.2 / 8.14.3 |
-| 工具链 | JDK（编译目标 21）、KSP | 21 / 2.2.20-2.0.4 |
-| SDK | compileSdk / targetSdk / minSdk | 36 / 35 / 31 |
+| 语言 | Kotlin（AGP 内置 Kotlin） | 2.4.20 |
+| UI | Jetpack Compose（BOM）+ Material 3 | 2026.09.00 |
+| 导航 | androidx.navigation:navigation-compose | 2.10.1 |
+| 数据库 | Room + KSP | 2.8.5 |
+| 偏好存储 | DataStore Preferences | 1.2.1 |
+| 后台提醒 | Android AlarmManager | 系统 API |
+| 序列化 | kotlinx-serialization-json | 1.11.0 |
+| 协程 | kotlinx-coroutines-android | 1.11.0 |
+| Markdown | multiplatform-markdown-renderer / m3 | 0.45.0 |
+| 相机 | AndroidX CameraX | 1.4.2 |
+| OCR | PaddleOCR PP-OCRv4 + MNN | MNN 3.6.1 |
+| 构建 | AGP / Gradle | 9.1.1 / 9.7.1 |
+| 工具链 | JDK（编译目标 21）、KSP | 21 / 2.3.10 |
+| SDK | compileSdk / targetSdk / minSdk | 37 / 35 / 31 |
 
-液态玻璃核心为 **vendor 进仓库的 [Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) backdrop 库源码**（`com.kyant.backdrop`），未以 Gradle 依赖形式引入（官方连续曲率形状 `com.kyant.shapes` 同样源码 vendor，因其 AAR 要求 compileSdk 37 + AGP 9.1），原因与改动见[液态玻璃实现](#液态玻璃实现交接重点)。
+液态玻璃核心为 **vendor 进仓库的 [Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) backdrop 库源码**（`com.kyant.backdrop`），未以 Gradle 依赖形式引入；官方连续曲率形状 `com.kyant.shapes` 同样以源码 vendor，以保留项目的 Android 单源集适配和现有渲染修改。原因与改动见[液态玻璃实现](#液态玻璃实现交接重点)。
 
 ---
 
@@ -153,7 +156,7 @@ TiYu/
 │   └── java/
 │       ├── com/drone/quiz/
 │       │   ├── MainActivity.kt          # 入口 Activity：启动画面、SafeModeBanner、诊断屏路由、刷题时长 60s 心跳累计（UsageSignals 门控）
-│       │   ├── QuizApp.kt               # Application：CrashGuard 安装、WorkManager 调度
+│       │   ├── QuizApp.kt               # Application：CrashGuard 安装与应用级初始化
 │       │   ├── BootGuard.kt             # 启动守护：心跳 / 面包屑 / 异常死亡计数 / 安全模式
 │       │   ├── CrashGuard.kt            # 全局未捕获异常 → last_crash.txt → 启动报告屏
 │       │   ├── data/
@@ -183,13 +186,13 @@ TiYu/
 │       │   ├── util/GallerySave.kt      # MediaStore 存相册工具（打赏码保存到 Pictures/题屿，API 31+ 免权限）
 │       │   ├── util/GalleryShare.kt     # 系统分享面板（CSV 模板分享，FileProvider，v2.8.2）
 │       │   ├── util/AppUpdater.kt       # 检查更新（GitHub Releases API 比对版本 + 浏览器打开发布页，v2.8.8）
-│       │   └── work/Notify.kt           # 每日学习提醒（WorkManager，刷过当天不打扰）
+│       │   └── work/Notify.kt           # 每日学习提醒（AlarmManager，刷过当天不打扰）
 │       ├── com/kyant/backdrop/          # ★ vendored Kyant0 backdrop 库（Apache-2.0，勿随意重构）
 │       │   ├── Backdrop.kt / LayerBackdrop.kt / DrawBackdropModifier.kt
 │       │   ├── effects/（blur / lens / RenderEffect / ColorFilter）
 │       │   ├── highlight/ shadow/ internal/（AGSL 着色器、图层记录）
 │       │   └── catalog/utils/（DampedDragAnimation / InteractiveHighlight 等官方示例工具类）
-│       └── com/kyant/shapes/            # ★ vendored 官方连续曲率形状（Capsule/RoundedRectangle，同因 compileSdk 不升 maven 依赖）
+│       └── com/kyant/shapes/            # ★ vendored 官方连续曲率形状（Capsule/RoundedRectangle）
 ├── .github/workflows/build.yml          # CI：构建 → 签名 → Artifact → 自动发 Release
 ├── scripts/                             # 工具脚本（Python，见「工具脚本」节）
 ├── CHANGELOG.md / NOTICE / LICENSE / FONT_LICENSES(assets)
@@ -341,9 +344,10 @@ v2.7.4 教训固化：**错题解析展开后 20+ 条全量组合在外层滚动
 
 | 项 | 版本 | 说明 |
 |----|------|------|
-| JDK | 21（需含 javac，即 JDK 而非 JRE） | `compileOptions` 与 `kotlinOptions.jvmTarget` 均为 21 |
-| Android SDK | Platform 36 + Build-Tools 35.0.0 + Platform-Tools | `sdkmanager` 安装；`local.properties` 或 `ANDROID_HOME` 指向 SDK |
-| Gradle | 8.14.3 | 由 wrapper 自动下载，无需手动安装 |
+| JDK | 21（需含 javac，即 JDK 而非 JRE） | Java / Kotlin 编译目标均为 21 |
+| Android SDK | Platform 37 + Platform-Tools | `sdkmanager` 安装；`local.properties` 或 `ANDROID_HOME` 指向 SDK |
+| Native 工具链 | NDK 27.2.12479018 + CMake 3.22.1 | 用于 PaddleOCR / MNN JNI 薄封装 |
+| Gradle | 9.7.1 | 由 wrapper 自动下载，无需手动安装 |
 | 网络 | 首次构建需访问 google() / mavenCentral() | 依赖走 Gradle 缓存后可离线 |
 
 ### 本地构建
@@ -365,14 +369,14 @@ export DQ_KS_STORE_PASS=<密码>
 ```bash
 # 1. JDK 21（Temurin）
 # 2. Android cmdline-tools + sdkmanager
-sdkmanager "platforms;android-36" "build-tools;35.0.0" "platform-tools"
+sdkmanager "platforms;android-37" "platform-tools" "ndk;27.2.12479018" "cmake;3.22.1"
 # 3. export ANDROID_HOME=<sdk路径>   ← 新 shell 必须显式设置，workspace 重置后最常见漏项
 ./gradlew assembleRelease
 ```
 
 </details>
 
-> 常见坑：① 只装了 JRE 没有 javac → 换 JDK 21；② shell 里 `ANDROID_HOME` 未导出 → Gradle 找不到 SDK；③ Kotlin `-Xcontext-parameters` 编译器参数已在 `build.gradle.kts` 配置，不要删除，源码中有依赖该特性的写法。
+> 常见坑：① 只装了 JRE 没有 javac → 换 JDK 21；② shell 里 `ANDROID_HOME` 未导出 → Gradle 找不到 SDK；③ AGP 9 使用内置 Kotlin，不再单独应用 `org.jetbrains.kotlin.android` 插件。
 
 ---
 
@@ -395,7 +399,7 @@ Checkout → JDK 21(Temurin) → Gradle Setup
 
 ```bash
 curl -s -H "Authorization: token $GITHUB_TOKEN" \
-  "https://api.github.com/repos/Everett406/TiYu/actions/runs?per_page=5"
+  "https://api.github.com/repos/dadaluo/TiYu/actions/runs?per_page=5"
 ```
 
 ### 发版 Checklist（每版必做，五处同步）
@@ -529,6 +533,8 @@ python3 scripts/convert_bank.py <题库.csv> [-o app/src/main/assets/questions.j
 |------|------|------|
 | `scripts/static_check.py` | **发版前静态自检**（括号平衡 / 历史 API 残留 / 关键特性防误删断言） | push 前必跑；零依赖，有 rg 用 rg、没有自动降级 os.walk |
 | `scripts/convert_bank.py` | 题库 CSV → `assets/questions.json` | 日常题库维护主入口 |
+| `scripts/scrape_jsyks.py` | 抓取驾驶员考试网科目一 / 科目四题库 | 生成 JSON、CSV、ZIP 与校验摘要，支持缓存续传 |
+| `scripts/build_tiyu_import.py` | 抓取 JSON → 题屿导入 ZIP | 规范化题型、答案、解析与图片，生成 App 可直接导入的题库包 |
 | `scripts/gen_bank.py` | 初版 801 题参数化生成器 | 历史留存 |
 | `scripts/vendor_backdrop.py` | 从上游 backdrop 仓库源码 vendor 进 `com.kyant.backdrop` | `SRC` 为上游源码本地路径，升级库版本时修改后运行；vendor 后需按 NOTICE 重做 expect/actual 合并等改动 |
 | `scripts/setup_signing.py` | 生成 / 校验 keystore，并写入 GitHub Secrets（`DQ_KEYSTORE_B64` / `DQ_KS_STORE_PASS`） | GitHub Token 经环境变量 `GITHUB_TOKEN` 提供；依赖 `pynacl` |
@@ -590,6 +596,7 @@ python3 scripts/convert_bank.py <题库.csv> [-o app/src/main/assets/questions.j
 | v2.14.0 | 51 | **拍照搜题单题模式**：默认自动框住一道题只出一张卡（上一题/下一题切换，整页退居切换项）；手指拖画框框哪道搜哪道（框内行重切+缓存题库即时匹配，兜底漏题连体）；取景框改单题横向长条，横握手机可拍 |
 | v2.15.0 | 52 | **标题栏渐进式模糊**：交界处模糊半径沿轴渐变（AGSL 双 pass 可变半径 RenderEffect，7 页面生效，旧蒙版方案彻底移除）；**每日提醒后台保活**：WorkManager→AlarmManager 精确闹钟（进程死也准时）+ 开机重排 + 电池优化白名单"后台运行"弹窗 + 打开自愈补排 |
 | v2.16.0 | 53 | **安装包瘦身 58→约 44MB**：OCR 换 PaddleOCR PP-OCRv4 + MNN 推理（libdroneocr.so 薄封装 + vendor libMNN.so 双 ABI），ML Kit bundled 中文识别（约 14MB 模型+引擎）移除；**模型按需下载**：不随 APK 分发，首次点拍照搜题弹窗内下载（ModelScope 国内直连，约 15MB 一次，字节数+SHA-256 双校验、双线路互备、可取消/失败重试，filesDir 离线复用，无设置页入口）；渐进式模糊整体撤除（v2.15.0 实测后裁定），界面回到此前样式 |
+| v2.17.0 | 54 | **解析支持 Markdown 排版**：刷题、搜索结果与错题回顾统一使用 Markdown 渲染，支持标题、列表、引用等结构；**工具链与 AndroidX 依赖升级**（AGP 9.1.1 / Gradle 9.7.1 / Kotlin 2.4.20 / compileSdk 37）；仓库及更新链路迁移至 `dadaluo/TiYu` |
 
 完整变更明细见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -609,7 +616,7 @@ python3 scripts/convert_bank.py <题库.csv> [-o app/src/main/assets/questions.j
 ## 致谢
 
 - [Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) —— 液态玻璃核心能力来源（backdrop 库 + shapes，Apache-2.0，vendor 并入并修改，见 [NOTICE](NOTICE)）
-- [Jetpack Compose](https://developer.android.com/compose) / [Room](https://developer.android.com/training/data-storage/room) / [WorkManager](https://developer.android.com/topic/libraries/architecture/workmanager) —— AndroidX 全家桶
+- [Jetpack Compose](https://developer.android.com/compose) / [Room](https://developer.android.com/training/data-storage/room) / [CameraX](https://developer.android.com/media/camera/camerax) —— AndroidX 核心组件
 - [Noto Sans SC / Noto Serif SC](https://fonts.google.com/noto) 与 [霞鹜文楷 LXGW WenKai](https://github.com/lxgw/LxgwWenKai) —— 内置阅读字体（OFL，子集化嵌入，见 FONT_LICENSES）
 - 《无人机装调题库（含解析）》 —— 题库内容由需求方提供
 

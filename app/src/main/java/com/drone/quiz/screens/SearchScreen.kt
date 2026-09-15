@@ -50,6 +50,7 @@ import com.drone.quiz.data.repo.Question
 import com.drone.quiz.data.repo.optionLabel
 import kotlinx.coroutines.flow.first
 import com.drone.quiz.screens.common.TagChip
+import com.drone.quiz.screens.common.ParseBlock
 import com.drone.quiz.screens.common.displayCategory
 import com.drone.quiz.screens.common.rememberBankName
 import com.drone.quiz.screens.common.heroSearchField
@@ -374,18 +375,7 @@ private fun SearchResultItem(
                         }
                     }
                     if (q.explanation.isNotBlank()) {
-                        Text(
-                            q.explanation,
-                            color = ui.textSub,
-                            fontSize = 12.sp,
-                            lineHeight = 18.sp,
-                            modifier = Modifier
-                                .padding(top = 8.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(ui.ink.copy(alpha = 0.05f))
-                                .padding(10.dp)
-                                .fillMaxWidth()
-                        )
+                        ParseBlock(q.explanation)
                     }
                 }
             }

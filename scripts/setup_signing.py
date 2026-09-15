@@ -8,7 +8,7 @@
 
 可配置环境变量:
     GITHUB_TOKEN       GitHub 访问令牌（必填，不落盘、不硬编码）
-    DQ_GITHUB_REPO     目标仓库，默认 Everett406/DroneQuiz
+    DQ_GITHUB_REPO     目标仓库，默认 dadaluo/TiYu
     DQ_KEYSTORE_DIR    keystore 本地保存目录，默认 ./keystore（仓库外请自行指定）
     DQ_KEYSTORE_FILE   已有 keystore 文件路径（存在则复用，不重新生成）
 
@@ -29,7 +29,7 @@ import urllib.request
 from nacl import encoding, public
 
 PAT = os.environ.get("GITHUB_TOKEN", "")
-REPO = os.environ.get("DQ_GITHUB_REPO", "Everett406/DroneQuiz")
+REPO = os.environ.get("DQ_GITHUB_REPO", "dadaluo/TiYu")
 KS_DIR = os.environ.get("DQ_KEYSTORE_DIR", os.path.join(os.getcwd(), "keystore"))
 KS_FILE = os.environ.get("DQ_KEYSTORE_FILE", os.path.join(KS_DIR, "dronequiz.keystore"))
 ALIAS = "dronequiz"

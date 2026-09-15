@@ -12,8 +12,8 @@ permissions:
   contents: write
 
 env:
-  APP_VERSION_NAME: 2.16.0
-  APP_VERSION_TAG: v2.16.0
+  APP_VERSION_NAME: 2.17.0
+  APP_VERSION_TAG: v2.17.0
 
 jobs:
   build:
@@ -66,27 +66,18 @@ jobs:
           name: 题屿 TiYu ${{ env.APP_VERSION_TAG }}
           files: dist/TiYu-${{ env.APP_VERSION_NAME }}.apk
           body: |
-            ## 题屿 TiYu v2.16.0
+            ## 题屿 TiYu v2.17.0
 
-            ### 安装包瘦身：OCR 模型按需下载（第四十九轮）
+            ### 新功能 —— 解析支持 Markdown 排版
 
-            **安装包从 58MB 减到约 44MB。**
-
-            此前拍照搜题的 OCR 引擎（ML Kit 中文识别）模型内置在安装包里，占了约 14MB。
-            本版把模型从包里拆出来：
-
-            - **首次点拍照搜题时**才会提示下载识别模型（约 15MB，仅需一次），
-              国内线路（ModelScope 阿里 CDN）直连，下载后离线可用
-            - 下载在弹窗内完成（带进度，可取消/失败重试），不需要去设置页找入口
-            - 识别引擎同步升级为 PaddleOCR PP-OCRv4，斜拍自动矫正、切题、
-              搜题匹配等工作流与上一版完全一致
-
-            **每日提醒后台保活**（上一版功能，本版继续有效）：进程被杀也准时发通知，
-            重启手机自动重排。
-
-            **回滚说明**：上一版的标题栏滚动虚化效果实测后撤除，界面回到此前样式。
+            - 刷题、搜索结果和错题回顾的解析区统一支持 Markdown，
+              标题、列表、引用等长文结构更清晰，并沿用当前阅读字体和主题色。
+            - 升级 AGP 9.1.1、Gradle 9.7.1、Kotlin 2.4.20、Compose BOM 2026.09.00
+              以及 AndroidX / kotlinx 依赖，compileSdk 升至 37。
+            - 已同步上游 v2.16.0：PaddleOCR + MNN 拍照搜题、模型按需下载、
+              CameraX 和 AlarmManager 提醒链路全部保留。
+            - 项目发布与检查更新链路迁移至 `dadaluo/TiYu`。
 
             ---
 
-            **安装**：下载下方 `TiYu-2.16.0.apk` 安装覆盖即可，数据自动迁移。
-            已装 v2.15.0 的用户覆盖安装后，首次用拍照搜题会多一次模型下载。
+            **安装**：下载下方 `TiYu-2.17.0.apk` 安装覆盖即可，数据无需迁移。

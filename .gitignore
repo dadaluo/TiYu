@@ -10,3 +10,5 @@ cxx/
 app/build/
 .kotlin/
 .cxx/
+/data/
+/keystore/

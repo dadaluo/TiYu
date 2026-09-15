@@ -21,10 +21,10 @@ import java.net.URL
 object AppUpdater {
 
     /** 最新版查询端点（releases/latest：仅取正式发布，不含 pre-release） */
-    private const val LATEST_API = "https://api.github.com/repos/Everett406/TiYu/releases/latest"
+    private const val LATEST_API = "https://api.github.com/repos/dadaluo/TiYu/releases/latest"
 
     /** Releases 页面（浏览器打开入口；手动浏览/下载安装包都到这里） */
-    const val RELEASES_URL = "https://github.com/Everett406/TiYu/releases"
+    const val RELEASES_URL = "https://github.com/dadaluo/TiYu/releases"
 
     /**
      * 拉取最新 Release 版本号（tag_name 去掉前导 v，如 "2.8.8"）。

@@ -61,6 +61,9 @@ import com.drone.quiz.ui.theme.LocalReadingFont
 import com.drone.quiz.ui.theme.LocalUi
 import com.drone.quiz.ui.theme.backdropIsDark
 import com.kyant.backdrop.Backdrop
+import com.mikepenz.markdown.m3.Markdown
+import com.mikepenz.markdown.m3.markdownColor
+import com.mikepenz.markdown.m3.markdownTypography
 
 /**
  * 题型作答组件族（v2.8.0）：刷题页与模考页共用。
@@ -275,6 +278,12 @@ fun YourAnswerLine(text: String) {
 @Composable
 fun ParseBlock(explanation: String) {
     val ui = LocalUi.current
+    val bodyStyle = TextStyle(
+        color = ui.text,
+        fontSize = 13.sp,
+        lineHeight = 21.sp,
+        fontFamily = LocalReadingFont.current
+    )
     Column(
         Modifier
             .fillMaxWidth()
@@ -284,12 +293,26 @@ fun ParseBlock(explanation: String) {
             .padding(14.dp)
     ) {
         Text("解析", color = ui.textSub, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-        Text(
-            explanation.ifBlank { "暂无解析" },
-            color = ui.text,
-            fontSize = 13.sp,
-            lineHeight = 21.sp,
-            modifier = Modifier.padding(top = 4.dp)
+        Markdown(
+            content = explanation.ifBlank { "暂无解析" },
+            colors = markdownColor(text = ui.text),
+            typography = markdownTypography(
+                h1 = bodyStyle.copy(fontSize = 18.sp, fontWeight = FontWeight.Bold),
+                h2 = bodyStyle.copy(fontSize = 17.sp, fontWeight = FontWeight.Bold),
+                h3 = bodyStyle.copy(fontSize = 16.sp, fontWeight = FontWeight.Bold),
+                h4 = bodyStyle.copy(fontSize = 15.sp, fontWeight = FontWeight.Bold),
+                h5 = bodyStyle.copy(fontSize = 14.sp, fontWeight = FontWeight.Bold),
+                h6 = bodyStyle.copy(fontWeight = FontWeight.Bold),
+                text = bodyStyle,
+                paragraph = bodyStyle,
+                ordered = bodyStyle,
+                bullet = bodyStyle,
+                list = bodyStyle,
+                quote = bodyStyle
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp)
         )
     }
 }
@@ -707,13 +730,7 @@ fun WrongAnswerBlock(q: Question, userAnswer: String?) {
             modifier = Modifier.padding(top = 4.dp)
         )
         if (q.explanation.isNotBlank()) {
-            Text(
-                q.explanation,
-                color = ui.textSub,
-                fontSize = 12.sp,
-                lineHeight = 18.sp,
-                modifier = Modifier.padding(top = 2.dp)
-            )
+            ParseBlock(q.explanation)
         }
     }
 }
