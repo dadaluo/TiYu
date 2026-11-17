@@ -509,16 +509,17 @@ python3 scripts/static_check.py   # 括号平衡 + 残留/必备 API 检查，PA
 
 ## 签名体系
 
-项目自 v2.0.2 起使用**固定签名 keystore**（RSA 2048，有效期 30 年，alias `dronequiz`），本地与 CI 共用同一把钥匙，保证所有渠道 APK 签名一致、可覆盖安装。
+本分支唯一签名为 `keystore/dronequiz.keystore`，alias `dronequiz`。Debug、Release 与 Android 测试 APK 均使用这把密钥，不再回退到 Android debug 签名。
 
-| 载体 | 内容 |
+签名公开标识唯一配置在 `gradle.properties` 的 `tiyu.signing.*`，Gradle 和 Secrets 脚本共用。固定证书 SHA-256：`26a55abfb7e94682378a51319c4f8461e98662c67d2dd97ba4c24f3cc15d9a45`。每次签名都会校验指纹，缺少密钥、密码错误或证书不符时直接终止打包。
+
+| 环境 | 配置 |
 |------|------|
-| 本地 | keystore 与密码保存在仓库**之外**的安全目录（本项目工作区为 `/home/z/my-project/keystore/`：`dronequiz.keystore` + `pass.txt`），**严禁提交进仓库** |
-| GitHub Secrets | `DQ_KEYSTORE_B64`（keystore 文件的 base64）、`DQ_KS_STORE_PASS`（store/key 密码，两者相同） |
-| 构建注入 | 本地经环境变量 `DQ_KS_PATH` / `DQ_KS_STORE_PASS`；CI 由 build.yml 解码 secret 写入 `$RUNNER_TEMP` 后同样以环境变量传给 Gradle |
-| 缺省回退 | 若环境变量缺失，release 构建回退为 **debug 签名**——该产物无法覆盖安装正式版，注意识别 |
+| 本地 | 默认读取已被 Git 忽略的 `keystore/dronequiz.keystore` 和 `keystore/pass.txt`；无需设置环境变量 |
+| GitHub Actions | `DQ_KEYSTORE_B64` 与 `DQ_KS_STORE_PASS` Secrets 必须对应同一把固定密钥；CI 通过 `DQ_KS_PATH` / `DQ_KS_STORE_PASS` 注入临时路径和密码 |
+| 密码 | `pass.txt` 保存 keystore 的实际密码，不包含 CMD 转义；初始化脚本使用参数数组和环境变量传入密码，特殊字符不会被 shell 改写 |
 
-**交接必读**：keystore 一旦丢失，后续所有版本都无法以固定签名发布，用户必须卸载重装。请立即备份 `dronequiz.keystore` 与密码（至少两份异地存储，如密码管理器 + 离线介质）。需要重置 Secrets 时可运行 `scripts/setup_signing.py`（需 `pip install pynacl`，并经环境变量提供 GitHub Token）。
+历史 debug 密钥与签名轮换链只作离线备份，不参与日常构建。请备份固定 keystore 和密码，勿提交到 Git。`scripts/setup_signing.py` 可将现有密钥配置到 GitHub Secrets；不要重新生成项目固定密钥。
 
 ---
 

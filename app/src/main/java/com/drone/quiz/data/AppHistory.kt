@@ -20,8 +20,8 @@ object AppHistory {
     /** 从新到旧排列（时间轴由近及远看） */
     val ALL: List<Entry> = listOf(
 
-        Entry("2.19.54", "2026-11-17", "2026-11-17", "merge upstream updates and retain Markdown support",
-            listOf(), 1, false),
+        Entry("2.19.54", "2026-11-17", "2026-11-17", "unify fixed APK signing configuration",
+            listOf(), 2, false),
         Entry("2.19.53", "2026-10-19", "2026-10-30", "标注已迁移至 Gitee",
             listOf("答案图压在解析文字上", "首页图表卡的练习/模考切换", "_fn_body 切函数体时没剥注释，导致注释里的「你的回答」被当成代码命中，", "「答案图须包在同一个块」原本判「函数体里有没有 RoundedCornerShape(12.dp)」，"), 4, false),
         Entry("2.19.52", "2026-10-19", "2026-10-19", "解析支持插图——作图题的答案图放解析里",

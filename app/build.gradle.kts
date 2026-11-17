@@ -1,4 +1,6 @@
 import java.io.File
+import java.security.KeyStore
+import java.security.MessageDigest
 
 plugins {
     id("com.android.application")
@@ -6,6 +8,14 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
     id("com.google.devtools.ksp")
 }
+
+// 本地与 CI 只提供同一把固定密钥的存放位置和密码。
+val dqStoreFile = System.getenv("DQ_KS_PATH")?.takeIf { it.isNotBlank() }?.let(::File)
+    ?: rootProject.file("keystore/dronequiz.keystore")
+val dqStorePassword = System.getenv("DQ_KS_STORE_PASS")?.takeIf { it.isNotBlank() }
+    ?: rootProject.file("keystore/pass.txt").takeIf { it.isFile }?.readText(Charsets.UTF_8)?.trim()
+val dqKeyAlias = providers.gradleProperty("tiyu.signing.keyAlias").get()
+val dqCertificateSha256 = providers.gradleProperty("tiyu.signing.certificateSha256").get()
 
 android {
     namespace = "com.drone.quiz"
@@ -22,30 +32,21 @@ android {
         ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
     }
 
-    // 固定签名：本地（环境变量 DQ_KS_PATH/DQ_KS_STORE_PASS）与 GitHub Actions（secrets）共用同一 keystore，
-    // 保证所有渠道构建的 APK 签名一致，可覆盖安装、无需卸载旧版。
-    val ksPath = System.getenv("DQ_KS_PATH")
-    val ksStorePass = System.getenv("DQ_KS_STORE_PASS")
-    val hasDqKeystore = !ksPath.isNullOrBlank() && File(ksPath).exists() && !ksStorePass.isNullOrBlank()
-
     signingConfigs {
-        if (hasDqKeystore) {
-            create("dq") {
-                storeFile = File(ksPath!!)
-                storePassword = ksStorePass
-                keyAlias = "dronequiz"
-                keyPassword = ksStorePass
-            }
+        create("dq") {
+            storeFile = dqStoreFile
+            storePassword = dqStorePassword
+            keyAlias = dqKeyAlias
+            keyPassword = dqStorePassword
         }
     }
 
     buildTypes {
+        configureEach {
+            signingConfig = signingConfigs.getByName("dq")
+        }
         release {
             isMinifyEnabled = false
-            signingConfig = if (hasDqKeystore) signingConfigs.getByName("dq") else signingConfigs.getByName("debug")
-        }
-        debug {
-            if (hasDqKeystore) signingConfig = signingConfigs.getByName("dq")
         }
     }
     compileOptions {
@@ -61,6 +62,30 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+}
+
+val verifyFixedSigning by tasks.registering {
+    group = "verification"
+    description = "Verify that APK signing uses the project's fixed certificate."
+    doLast {
+        check(dqStoreFile.isFile && !dqStorePassword.isNullOrBlank()) {
+            "固定签名缺失：请配置 keystore/dronequiz.keystore 和 keystore/pass.txt，或 CI 的 DQ_KS_PATH / DQ_KS_STORE_PASS。"
+        }
+        val store = try {
+            KeyStore.getInstance(dqStoreFile, dqStorePassword!!.toCharArray())
+        } catch (_: Exception) {
+            throw GradleException("无法解锁固定签名 keystore，请检查密码；不会回退到 debug 签名。")
+        }
+        check(store.isKeyEntry(dqKeyAlias)) { "固定 keystore 缺少 dronequiz 私钥。" }
+        val certificate = store.getCertificate(dqKeyAlias)
+        val fingerprint = MessageDigest.getInstance("SHA-256")
+            .digest(certificate.encoded).joinToString("") { "%02x".format(it) }
+        check(fingerprint == dqCertificateSha256) { "签名证书与项目固定证书不一致，已拒绝打包。" }
+    }
+}
+
+tasks.matching { it.name.startsWith("validateSigning") }.configureEach {
+    dependsOn(verifyFixedSigning)
 }
 
 kotlin {
