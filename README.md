@@ -1,8 +1,11 @@
+> 本仓库为 GitHub 分支，持续保留 Markdown 解析与升级工具链。上游已同步至 v2.19.53；上游后续开发地址：<https://gitee.com/Everett5678/TiYu>。
+
+---
 <div align="center">
 
 # 题屿 · TiYu
 
-**题屿 TiYu**（原「无人机装调题库 DroneQuiz」，v2.8.8 起更名）— Android 原生刷题 / 模考 / 错题本应用 · Jetpack Compose · 液态玻璃 UI
+**纯离线的刷题 App** · Jetpack Compose · 液态玻璃 UI
 
 [![Release](https://img.shields.io/github/v/release/dadaluo/TiYu?style=flat-square)](https://github.com/dadaluo/TiYu/releases)
 [![Build APK](https://github.com/dadaluo/TiYu/actions/workflows/build.yml/badge.svg)](https://github.com/dadaluo/TiYu/actions/workflows/build.yml)
@@ -10,23 +13,47 @@
 ![Platform](https://img.shields.io/badge/platform-Android%2012%2B-3DDC84?style=flat-square)
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.4.20-7F52FF?style=flat-square)
 
-内置《无人机装调题库（含解析）》**800 题**（单选 640 / 判断 160），
-支持多题库管理与自定义题库导入（CSV / ZIP，含图片题，五种题型）、模考自动阅卷、错题强化训练与每日学习提醒。
+🌐 **[产品页 dadaluo.github.io/TiYu](https://dadaluo.github.io/TiYu/)**
 
-[下载最新 APK](https://github.com/dadaluo/TiYu/releases/latest) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/dadaluo/TiYu/issues)
+⬇️ **[下载最新 APK](https://github.com/dadaluo/TiYu/releases/latest/download/TiYu-latest.apk)**（约 36 MB，固定名直链，永远指向最新正式版）
+
+[全部版本与更新日志](https://github.com/dadaluo/TiYu/releases) · [问题反馈](https://github.com/dadaluo/TiYu/issues)
 
 </div>
 
 ---
 
+## 界面
+
+<div align="center">
+<table>
+<tr>
+<td width="33%" align="center"><b>首页</b><br><sub>进度环 · 连续打卡 · 学习热力图</sub></td>
+<td width="33%" align="center"><b>刷题</b><br><sub>题型筛选 · 顺序随机 · 进度接续</sub></td>
+<td width="33%" align="center"><b>模考</b><br><sub>题数时长 · 题型占比 · 及格分</sub></td>
+</tr>
+<tr>
+<td><img src="docs/img/home.jpg" width="270" alt="首页"></td>
+<td><img src="docs/img/practice.jpg" width="270" alt="刷题"></td>
+<td><img src="docs/img/exam.jpg" width="270" alt="模考"></td>
+</tr>
+</table>
+</div>
+
+> 截图与应用内壁纸配色同源：奶油纸感底 + 墨黑主操作 + 橙色点缀，底栏为真折射玻璃。
+
+---
+
 ## 目录
 
+- [界面](#界面)
 - [项目简介](#项目简介)
 - [功能特性](#功能特性)
 - [安装与使用](#安装与使用)
 - [技术栈](#技术栈)
 - [应用架构](#应用架构)
   - [源码结构](#源码结构)
+  - [渐进式模糊（已移除）](#渐进式模糊v21912-已整体移除交接重点)
   - [液态玻璃实现（交接重点）](#液态玻璃实现交接重点)
   - [刷题会话双槽机制（v2.7.4 交接重点）](#刷题会话双槽机制v274-交接重点)
   - [打赏弹窗机制（v2.7.4）](#打赏弹窗机制v274)
@@ -49,7 +76,9 @@
 
 ## 项目简介
 
-**题屿**是一款面向**无人机装调员职业技能培训**的离线刷题应用（仓库 v2.8.8 起更名为 TiYu——题屿拼音，GitHub 仓库名不支持纯中文；包名沿用历史 `com.drone.quiz`，桌面名称与关于页自 v2.7.3 起为「题屿」）。应用内置 800 道含解析的正式题库，覆盖单选与判断两类题型，提供刷题练习、全真模考、错题本、题目搜索、学习打卡与每日提醒等完整学习闭环，同时支持通过设置页导入自定义题库（CSV / 带图片的 ZIP）以适配其他科目。
+**题屿**是一款**通用型离线刷题 App**（仓库 v2.8.8 起更名为 TiYu——题屿拼音，GitHub 仓库名不支持纯中文；包名沿用历史 `com.drone.quiz`，桌面名称与关于页自 v2.7.3 起为「题屿」）。
+
+应用本身**不绑定任何特定科目**：提供刷题练习、全真模考、错题本、题目搜索、学习打卡与每日提醒等完整学习闭环，五种题型，题库可随时通过设置页导入自定义题库（CSV / 带图片的 ZIP）。仓库里**随赠**一套 800 道含解析的题库作为开箱即用的示例——它只是随赠内容，不代表 App 的适用范围，用户导入自己的题库后即可用于任何科目。
 
 项目采用纯 Kotlin + Jetpack Compose 构建，UI 层基于 Kyant0 的 **AndroidLiquidGlass (backdrop)** 库实现了 Android 平台少见的「液态玻璃」视觉效果（折射、色散、振动度），并为此建立了一整套**运行时守护与自动降级机制**（BootGuard / CrashGuard / 安全模式），保证在低端 GPU 或异常渲染环境下应用始终可用。全部构建、签名与发版流程由 GitHub Actions 自动化完成，本地无需 Android Studio 亦可参与开发。
 
@@ -63,13 +92,14 @@
 
 | 页面 | 功能要点 |
 |------|----------|
-| **首页** | 时间问候 + 昵称、学习进度环、预估通过率条、近 7 日刷题量柱状图 / 正确率折线（Canvas 自绘）、连续打卡双卡、错题提示、上次模考成绩速览；全局壁纸之上铺主题纱（wallScrim）保证可读性 |
-| **刷题** | **配置入口页**（`PracticeConfig.kt`：题型多选 / 筛选 chips、顺序 / 随机双模式、「将接续上次进度 · 第 N/M 题」实时提示、重新开始胶囊按钮）→ 全屏刷题页（`HorizontalPager` 左右滑题、点选即判、答错抖动 + **Markdown 解析**弹簧展开、题号面板单一数据源、自动切题、**题目图片**小图点开大图）；**顺序与随机两套进度槽独立记忆，且按题库隔离**（v2.7.4 双槽 + v2.8.8 读口校验，见下文）；**顺序模式循环补漏**（v2.8.6：刷到末题自动开新一轮，只挑没刷过的题）；**防沉迷**（v2.8.6：连续刷题 20 分钟弹窗提醒看远处，考试不受影响）；重新开始按钮带二次确认 |
-| **模考** | 题数、时长、及格分（合格线）可拖滑杆配置；**题型构成**在高级选项内（自动按库占比配比 / 手动比例滑杆联动 / 拖拽排序，v2.8.3–2.8.4）；倒计时（< 60s 红色脉冲）、到时自动交卷、交卷确认、玻璃答题卡面板（按题型分段 + 点号跳题）、自动阅卷；**已完成历史记录可单击回看成绩页**（数据库按 examId 重建，v2.7.4）；进行中记录可继续 / 放弃 / 删除 |
+| **首页** | 时间问候 + 昵称、学习进度环、预估通过率条（模考为主 + 题型校正 + 小样本收缩 + **正态分布尾部概率**，见 `PassEstimate.kt`）、近 7 日刷题量柱状图 / 正确率折线（Canvas 自绘，**可切换到模考成绩走势**，两模式共用同一张图表）、连续打卡双卡、错题提示、上次模考成绩速览；全局壁纸之上铺主题纱（wallScrim）保证可读性 |
+| **刷题** | **配置入口页**（`PracticeConfig.kt`：题型多选 / 筛选 chips、顺序 / 随机双模式、「将接续上次进度 · 第 N/M 题」实时提示、重新开始胶囊按钮）→ 全屏刷题页（`HorizontalPager` 左右滑题、点选即判、答错抖动 + 解析弹簧展开、题号面板单一数据源、自动切题、**题目图片**小图点开大图）；**顺序与随机两套进度槽独立记忆，且按题库隔离**（v2.7.4 双槽 + v2.8.8 读口校验，见下文）；**顺序模式循环补漏**（v2.8.6：刷到末题自动开新一轮，只挑没刷过的题）；**防沉迷**（v2.8.6：连续刷题 20 分钟弹窗提醒看远处，考试不受影响）；重新开始按钮带二次确认 |
+| **模考** | 题数、时长、及格分（合格线）可拖滑杆配置；**打乱选项顺序**（仅单选/多选，判断题不打乱，防背答案，v2.19.33）；**优先未答**（抽 `question_stats.attempts = 0` 的题，v2.19.32）；**错题优先**（错题本 `removed = 0` 优先于未答，v2.19.35）；**即时判定**开关（作答当场出对错 / 交卷后统一判，v2.19.31）；**配置记忆**（题数、时长、题型占比下次沿用，可一键恢复默认，v2.19.41）；**题型构成**在高级选项内（自动按库占比配比 / 手动比例滑杆联动 / 拖拽排序，v2.8.3–2.8.4）；倒计时（< 60s 红色脉冲）、到时自动交卷、交卷确认、玻璃答题卡面板（按题型分段 + 点号跳题）、自动阅卷；**已完成历史记录可单击回看成绩页**（数据库按 examId 重建，v2.7.4）；进行中记录可继续 / 放弃 / 删除 |
 | **模考成绩页** | 得分 / 用时 / 正误统计、**合格线回显**（开考时设定的分数定格存档，v2.8.6）、错题解析懒加载列表（`LazyColumn` 滚动流畅，v2.7.4 优化）、右上角浅色「三点」删除本次记录（**每周限删 2 次**，ISO 周自动重置，配额弹窗告知） |
 | **错题本** | 答错自动收录、「连续答对 N 次」三档移除策略、错题特训入口（不占用刷题进度槽）、分类筛选胶囊、展开解析、像素级连续映射滚动把手、条目删除（30dp 触达区 + 缩放淡出 / 其余条目弹性靠拢动画，v2.8.7） |
-| **搜索** | 题干 / 选项 / 解析全文检索、搜索历史（最多 8 条）、结果解析弹簧展开动画与 Markdown 排版 |
-| **设置** | 主题三档、字号四档、**阅读字体四款**（手机自带 / 思源黑体 / 思源宋体 / 霞鹜文楷，内置子集化字体文件）、刷题顺序、自动切题、及格分滑杆、错题移除阈值、每日提醒（AlarmManager 精确闹钟，刷过当天不打扰）、**防沉迷**（连续刷题 20 分钟提醒，考试不受影响）、壁纸（内置 4 张 + 自定义 + 可选模糊）、昵称、底栏玻璃模糊三档、**题库管理**（多题库切换 / 导入 CSV·ZIP / 重命名 / 删除 / 清空恢复，带图题目支持）、清空学习记录、画面特效开关、**使用引导**（题库管理与关于之间，随时重走导览）、**关于**（底部弹窗：应用介绍 / 检查更新 / 请喝奶茶） |
+| **搜索** | 题干 / 选项 / 解析全文检索、搜索历史（最多 8 条）、结果卡片逐条浮现（alpha + 模糊 + 上移，55ms 递进）、命中答案折叠为单字母一行 |
+| **解析** | 全站收敛到唯一 `ParseBlock`：默认折叠；展开后**逐字对焦**（56 字/秒，单字 230ms 内由「透明 + 3px 模糊」淡入并变清晰，blur 走 easeOut 提前收干净）。排版真值取自 `TextMeasurer`，已完成字由 Canvas 一次绘制、仅正在入场的 ≤7 字挂 `BlurEffect`，容器高度随已渲染行数平滑变化（v2.19.40–2.19.42） |
+| **设置** | 主题三档、字号四档、**阅读字体四款**（手机自带 / 思源黑体 / 思源宋体 / 霞鹜文楷，内置子集化字体文件）、刷题顺序、自动切题、及格分滑杆、错题移除阈值、每日提醒（AlarmManager，刷过当天不打扰）、**防沉迷**（连续刷题 20 分钟提醒，考试不受影响）、壁纸（内置 4 张 + 自定义 + 可选模糊）、昵称、底栏玻璃模糊三档、**题库管理**（多题库切换 / 导入 CSV·ZIP / 重命名 / 删除 / 清空恢复，带图题目支持）、清空学习记录、画面特效开关、**使用引导**（题库管理与关于之间，随时重走导览）、**关于**（底部弹窗：应用介绍 / 检查更新 / 请喝奶茶） |
 
 ### 交互与视觉
 
@@ -130,13 +160,11 @@
 | 序列化 | kotlinx-serialization-json | 1.11.0 |
 | 协程 | kotlinx-coroutines-android | 1.11.0 |
 | Markdown | multiplatform-markdown-renderer / m3 | 0.45.0 |
-| 相机 | AndroidX CameraX | 1.4.2 |
-| OCR | PaddleOCR PP-OCRv4 + MNN | MNN 3.6.1 |
 | 构建 | AGP / Gradle | 9.1.1 / 9.7.1 |
 | 工具链 | JDK（编译目标 21）、KSP | 21 / 2.3.10 |
 | SDK | compileSdk / targetSdk / minSdk | 37 / 35 / 31 |
 
-液态玻璃核心为 **vendor 进仓库的 [Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) backdrop 库源码**（`com.kyant.backdrop`），未以 Gradle 依赖形式引入；官方连续曲率形状 `com.kyant.shapes` 同样以源码 vendor，以保留项目的 Android 单源集适配和现有渲染修改。原因与改动见[液态玻璃实现](#液态玻璃实现交接重点)。
+液态玻璃核心为 **vendor 进仓库的 [Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) backdrop 库源码**（`com.kyant.backdrop`），未以 Gradle 依赖形式引入（官方连续曲率形状 `com.kyant.shapes` 同样源码 vendor，因其 AAR 要求 compileSdk 37 + AGP 9.1），原因与改动见[液态玻璃实现](#液态玻璃实现交接重点)。
 
 ---
 
@@ -147,7 +175,10 @@
 ```
 TiYu/
 ├── app/src/main/
-│   ├── AndroidManifest.xml              # 权限：POST_NOTIFICATIONS、VIBRATE、INTERNET（仅检查更新）；竖屏锁定
+│   ├── AndroidManifest.xml              # 权限：INTERNET（仅检查更新/探测发布页）、POST_NOTIFICATIONS、
+│   │                                    #       VIBRATE、SCHEDULE_EXACT_ALARM + USE_EXACT_ALARM、
+│   │                                    #       REQUEST_IGNORE_BATTERY_OPTIMIZATIONS、RECEIVE_BOOT_COMPLETED；
+│   │                                    #       竖屏锁定。不申请 CAMERA，也不申请任何存储权限。
 │   ├── assets/questions.json            # 内置题库（800 题，version=2）
 │   ├── res/
 │   │   ├── font/                        # 内置阅读字体（子集化）：Noto Sans SC、Noto Serif SC、霞鹜文楷 各 regular/medium(bold)
@@ -156,7 +187,7 @@ TiYu/
 │   └── java/
 │       ├── com/drone/quiz/
 │       │   ├── MainActivity.kt          # 入口 Activity：启动画面、SafeModeBanner、诊断屏路由、刷题时长 60s 心跳累计（UsageSignals 门控）
-│       │   ├── QuizApp.kt               # Application：CrashGuard 安装与应用级初始化
+│       │   ├── QuizApp.kt               # Application：CrashGuard 安装、WorkManager 调度
 │       │   ├── BootGuard.kt             # 启动守护：心跳 / 面包屑 / 异常死亡计数 / 安全模式
 │       │   ├── CrashGuard.kt            # 全局未捕获异常 → last_crash.txt → 启动报告屏
 │       │   ├── data/
@@ -186,19 +217,45 @@ TiYu/
 │       │   ├── util/GallerySave.kt      # MediaStore 存相册工具（打赏码保存到 Pictures/题屿，API 31+ 免权限）
 │       │   ├── util/GalleryShare.kt     # 系统分享面板（CSV 模板分享，FileProvider，v2.8.2）
 │       │   ├── util/AppUpdater.kt       # 检查更新（GitHub Releases API 比对版本 + 浏览器打开发布页，v2.8.8）
-│       │   └── work/Notify.kt           # 每日学习提醒（AlarmManager，刷过当天不打扰）
+│       │   └── work/Notify.kt           # 每日学习提醒（WorkManager，刷过当天不打扰）
 │       ├── com/kyant/backdrop/          # ★ vendored Kyant0 backdrop 库（Apache-2.0，勿随意重构）
 │       │   ├── Backdrop.kt / LayerBackdrop.kt / DrawBackdropModifier.kt
 │       │   ├── effects/（blur / lens / RenderEffect / ColorFilter）
 │       │   ├── highlight/ shadow/ internal/（AGSL 着色器、图层记录）
 │       │   └── catalog/utils/（DampedDragAnimation / InteractiveHighlight 等官方示例工具类）
-│       └── com/kyant/shapes/            # ★ vendored 官方连续曲率形状（Capsule/RoundedRectangle）
-├── .github/workflows/build.yml          # CI：构建 → 签名 → Artifact → 自动发 Release
+│       └── com/kyant/shapes/            # ★ vendored 官方连续曲率形状（Capsule/RoundedRectangle，同因 compileSdk 不升 maven 依赖）
+├── site/                                # ★ 产品页（GitHub Pages 发布物）
+│   ├── index.html                       #   单文件页面：配色取自 ui/theme/Theme.kt，水墨远山取自内置壁纸
+│   ├── version.json                     #   发版时由 CI 写入（页面在浏览器里无法跨域读 GitHub）
+│   ├── favicon.svg
+│   └── img/                             #   home / practice / exam 三张真实截图 + og.jpg 分享卡
+├── docs/img/                            # README 用截图（与 site/img 同源）
+├── .github/workflows/build.yml          # CI：构建 → 签名 → Artifact → 发 Release → 部署 Pages
 ├── scripts/                             # 工具脚本（Python，见「工具脚本」节）
 ├── CHANGELOG.md / NOTICE / LICENSE / FONT_LICENSES(assets)
 ├── build.gradle.kts                     # 插件版本集中声明
 └── settings.gradle.kts
 ```
+
+### 渐进式模糊（v2.19.12 已整体移除，交接重点）
+
+**这个功能已经不存在了。** `ui/glass/ProgressiveBlur.kt` 连同四个版本、十余次尝试
+全部删除，五个 Tab 页的挂载点一并摘掉。
+
+四次实现的完整经过与失败原因（**不要再走一遍**）：
+
+| 版本 | 做法 | 结局 |
+|---|---|---|
+| v2.6.0~v2.7.2 | alpha 蒙版 / 雾条 / `saveLayer` 盖在滚动容器上 | 与玻璃卡离屏渲染互作，伪影闪烁 |
+| v2.15.0 | 自写着色器做连续可变半径（稠密 2D 网格 + 每抽头 `exp()`） | 注释原话"太贵了"；per-pixel 成本过高 |
+| v2.17.0 | 分层固定半径叠加 | 每层一个裁剪边界 → 真机满屏横线 + 底栏糊穿 |
+| v2.19.0 | 改挂「滚动内容自己」，Agora 九抽头可分离核 | 几何上解决了接缝，但用户最终嫌耗电、观感也不对 |
+
+**教训比结论更重要**：底栏玻璃本身折射的就是**已模糊的内容层**，
+去掉这层渐进模糊并无视觉缺憾；而它每帧要在**整个滚动视口**跑两趟着色器，
+是全 App 最贵的一处绘制。**若日后要重做，先回答"它在解决什么问题"——
+这个前提至今没有被证明过。** 观感问题上"推导上更正确"也≠"看起来更好"，
+且没有真机可验证时不要动实现细节（详见 v2.19.5 / v2.19.6 两次回归的记录）。
 
 ### 液态玻璃实现（交接重点）
 
@@ -280,7 +337,7 @@ v2.7.4 教训固化：**错题解析展开后 20+ 条全量组合在外层滚动
 | 表名 | 用途 | 关键点 |
 |------|------|--------|
 | `banks` | 题库元数据（多题库，v2.8.0） | 名称 / 来源 / 播种版本；当前题库 id 存 DataStore |
-| `questions` | 题库 | 索引 category / type；id 由 CSV 题号或题干哈希生成；v2.8.5 起带 `images` 列（图片题，文件名按 \| 分隔） |
+| `questions` | 题库 | 索引 category / type；id 由 CSV 题号或题干哈希生成；v2.8.5 起带 `images` 列（图片题，文件名按 \| 分隔）；v2.19.52 起带 `explanationImages` 列（解析里的答案图） |
 | `practice_records` | 刷题记录 | 索引 qid / ts |
 | `question_stats` | 题目维度统计 | 正确次数 / 作答次数等 |
 | `exam_records` | 模考记录 | 配置、得分、用时、合格线 `pass_line`（v2.8.6，开考定格；成绩页重建来源之一） |
@@ -311,6 +368,15 @@ v2.7.4 教训固化：**错题解析展开后 20+ 条全量组合在外层滚动
 | `nickname` | string | 昵称（≤5 字） | "" |
 | `reading_font` | string | 阅读字体 system/sans/serif/kai | "system" |
 | `search_history` | string(JSON) | 搜索历史数组（≤8 条，最新在前） | [] |
+| `exam_instant_judge` | bool | 模考**即时判定**：作答当场出对错；关则整卷交完再判 | false |
+| `exam_shuffle_options` | bool | 模考**打乱选项**：仅单选/多选，判断题不打乱 | false |
+| `exam_prefer_unseen` | bool | 模考**优先未答**（`question_stats.attempts = 0` 优先抽） | true |
+| `exam_prefer_wrong` | bool | 模考**错题优先**（错题本 `removed = 0` 优先抽，优先级高于未答） | false |
+| `exam_quick_config` | string(JSON) | 模考配置记忆（`ExamQuickConfig`：题型题数 counts / 时长 / 题型顺序 / **judgeRatio 用户意图** / manualRatios / autoMix）。注意 counts 是开考时的派生态，记忆用户意图必须靠 judgeRatio —— 见 `ExamConfigRoundTripTest` | null |
+| `daily_goal` | int | 每日目标题数（5–500） | 30 |
+| `eye_care_reminder` | bool | 护眼提醒 | false |
+| `share_card_name` / `_slogan` / `_accent` / `_theme` | string | 分享卡片自定义文案与主题 | "" |
+| `wrong_last_type` / `wrong_last_cat` | string | 错题本上次筛选条件 | "" |
 | `usage_ms` | long | 累计刷题毫秒（打赏门槛，仅答题页前台心跳累计） | 0 |
 | `support_prompted` | bool | 打赏弹窗已弹过 | false |
 | `support_refused` | bool | 打赏永久拒绝 | false |
@@ -344,10 +410,9 @@ v2.7.4 教训固化：**错题解析展开后 20+ 条全量组合在外层滚动
 
 | 项 | 版本 | 说明 |
 |----|------|------|
-| JDK | 21（需含 javac，即 JDK 而非 JRE） | Java / Kotlin 编译目标均为 21 |
-| Android SDK | Platform 37 + Platform-Tools | `sdkmanager` 安装；`local.properties` 或 `ANDROID_HOME` 指向 SDK |
-| Native 工具链 | NDK 27.2.12479018 + CMake 3.22.1 | 用于 PaddleOCR / MNN JNI 薄封装 |
-| Gradle | 9.7.1 | 由 wrapper 自动下载，无需手动安装 |
+| JDK | 21（需含 javac，即 JDK 而非 JRE） | `compileOptions` 与 `kotlinOptions.jvmTarget` 均为 21 |
+| Android SDK | Platform 36 + Build-Tools 35.0.0 + Platform-Tools | `sdkmanager` 安装；`local.properties` 或 `ANDROID_HOME` 指向 SDK |
+| Gradle | 8.14.3 | 由 wrapper 自动下载，无需手动安装 |
 | 网络 | 首次构建需访问 google() / mavenCentral() | 依赖走 Gradle 缓存后可离线 |
 
 ### 本地构建
@@ -369,14 +434,28 @@ export DQ_KS_STORE_PASS=<密码>
 ```bash
 # 1. JDK 21（Temurin）
 # 2. Android cmdline-tools + sdkmanager
-sdkmanager "platforms;android-37" "platform-tools" "ndk;27.2.12479018" "cmake;3.22.1"
+sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "platform-tools"
 # 3. export ANDROID_HOME=<sdk路径>   ← 新 shell 必须显式设置，workspace 重置后最常见漏项
 ./gradlew assembleRelease
 ```
 
 </details>
 
-> 常见坑：① 只装了 JRE 没有 javac → 换 JDK 21；② shell 里 `ANDROID_HOME` 未导出 → Gradle 找不到 SDK；③ AGP 9 使用内置 Kotlin，不再单独应用 `org.jetbrains.kotlin.android` 插件。
+> 常见坑：① 只装了 JRE 没有 javac → 换 JDK 21；② shell 里 `ANDROID_HOME` 未导出 → Gradle 找不到 SDK；③ Kotlin `-Xcontext-parameters` 编译器参数已在 `build.gradle.kts` 配置，不要删除，源码中有依赖该特性的写法（`com/kyant/backdrop/internal/LayerRecorder.kt` 实际用到 context 参数）。
+
+### 上游历史工具链边界（本分支已完成升级）
+
+本分支已使用 **AGP 9.1.1 / Gradle 9.7.1 / compileSdk 37 / Kotlin 2.4.20**，并保留 `-Xcontext-parameters`。以下为上游旧工具链的历史限制：
+
+| 依赖 | 卡点 |
+|------|------|
+| `navigation-compose` 2.10.2 | 要求 AGP ≥ 9.1.0 + compileSdk ≥ 37 |
+| `lifecycle` 2.11.0 | 同上（`activity-compose` 1.13.0 会传递引入） |
+| Compose BOM 2026.09.x | 可用，但官方渐进模糊 API `Modifier.blur(BlurRadiusSpec)` 只在 **1.13.0-alpha03**（仍 alpha），且该版库 compileSdk 已抬到 37.1 |
+
+要吃到这几版需连带升级 AGP 9 / Gradle 9 / compileSdk 37，并处理 AGP 9 的内置 Kotlin
+迁移（`org.jetbrains.kotlin.android` 与新 DSL 不兼容）。建议用 Android Studio 的
+AGP Upgrade Assistant 处理，不要手改。
 
 ---
 
@@ -387,11 +466,17 @@ CI 由 [.github/workflows/build.yml](.github/workflows/build.yml) 承担，`push
 ```
 Checkout → JDK 21(Temurin) → Gradle Setup
   → 从 Secrets 恢复 keystore（DQ_KEYSTORE_B64 解码 + DQ_KS_STORE_PASS）
-  → ./gradlew assembleRelease
+  → python3 scripts/static_check.py
+  → ./gradlew testDebugUnitTest assembleRelease
   → 重命名为 TiYu-${APP_VERSION_NAME}.apk
   → Upload Artifact
   → softprops/action-gh-release 自动发布到 tag ${APP_VERSION_TAG}
 ```
+
+**产品页源码**位于 `site/`；本分支默认只构建和发布 APK，未自动部署 GitHub Pages。应用访问产品页失败时会退回本仓库 Releases。
+
+- 固定名资产 `TiYu-latest.apk` 让 `[releases/latest/download/TiYu-latest.apk](https://github.com/dadaluo/TiYu/releases/latest/download/TiYu-latest.apk)` 成为**永不过期的直链**，页面与任何外部引用都不必跟着版本号改；仅正式版更新它，preview/draft 不抢「最新」这个位置；
+- **产品页版本号保存在 `site/version.json`**，页面同源读取。不能用 `fetch('https://github.com/.../releases/latest')` 再读 `r.url` ——那是跨域请求 GitHub 的 HTML 页，GitHub 不返回 `Access-Control-Allow-Origin`，浏览器会按 CORS 直接拦掉，站点永远读不到版本号（v2.19.43 修）。
 
 - workflow 配置了 `paths-ignore: ['**.md']`：**只改 Markdown 文档的提交不会触发构建**，避免同版本号 tag 重复发布；
 - 兜底手段：纯文档 / CI 配置微调的提交，commit message 里带 `[skip ci]` 可强制跳过本次构建；
@@ -469,7 +554,7 @@ python3 scripts/convert_bank.py <题库.csv> [-o app/src/main/assets/questions.j
 - 自动识别列头（题干 / 选项A–H / 答案 / 解析 / 类型 / 分类 / 题号，支持中英文变体），多编码尝试（utf-8-sig / gb18030 等）；
 - 答案归一化：字母（A–H）、对/错、正确/错误、数字序号（1 起）均可解析；解析失败会逐行列出；
 - 输出 `version = 2`；**若替换的是新版题库，请手动递增 version**（如改为 3）并重新发版；
-- 当前内置题库：`version = 2`，800 题（单选 640 / 判断 160），单分类「无人机装调」。
+- 当前随赠题库：`version = 2`，800 题（单选 640 / 判断 160），单分类「无人机装调」。这是**随赠的示例题库**，不是 App 的能力边界；导入自定义题库即可用于任意科目。
 
 `scripts/gen_bank.py` 是初版 801 题参数化生成器（11 分类），仅作为历史数据源留存，不再用于当前题库。
 
@@ -479,9 +564,13 @@ python3 scripts/convert_bank.py <题库.csv> [-o app/src/main/assets/questions.j
 
 | 通道 | 结构 | 要点 |
 |------|------|------|
-| CSV | 列头：题号 / 题干 / 选项A–H / 答案 / 解析 / 类型 / 分类 / 图片（可选） | RFC4180 解析；类型支持单选 / 多选 / 判断 / 填空 / 简答；图片列填文件名，多图 `\|` 分隔 |
+| CSV | 列头：题号 / 题型 / 题干 / 图片 / 选项A–H / 答案 / 解析 / 解析图片 / 备注 | RFC4180 解析；类型支持单选 / 多选 / 判断 / 填空 / 简答；图片列填文件名，多图 `\|` 分隔 |
 | ZIP | 题目 CSV + `images/` 图片文件夹（也兼容只打包单个 CSV） | 仅被引用的图片落盘、随题库删除一并清理；图片支持 jpg / jpeg / png / webp / gif / bmp，建议英文数字命名 |
 
+- **「图片」与「解析图片」必须分清**（v2.19.52）：
+  - 「图片」= 题目自带的图（电路图 / 地图 / 照片 / 示意图），**作答前就能看到**，显示在题干下方；
+  - 「解析图片」= **答案本身就是一张图**时用（作图题的几何作图、步骤图、标准答案图）。它藏在解析里，而**解析默认折叠**，用户必须主动点「查看解析」才展开——所以作答前看不到答案，不会剧透。
+  - ⚠ 把答案图错放进「图片」列，会在用户还没作答时就把答案显示在题干下方。
 - 导入完成自动切换为新题库；学习数据（进度 / 统计 / 错题）按题库隔离保存；
 - 题库可重命名（列表铅笔入口，≤16 字）与删除（内置题库删除后可经「清空记录」恢复）；
 - 「CSV 模板」按钮走系统分享面板（可发微信 / 邮件等），模板含图片列与 ZIP 打包示例行。
@@ -533,8 +622,6 @@ python3 scripts/convert_bank.py <题库.csv> [-o app/src/main/assets/questions.j
 |------|------|------|
 | `scripts/static_check.py` | **发版前静态自检**（括号平衡 / 历史 API 残留 / 关键特性防误删断言） | push 前必跑；零依赖，有 rg 用 rg、没有自动降级 os.walk |
 | `scripts/convert_bank.py` | 题库 CSV → `assets/questions.json` | 日常题库维护主入口 |
-| `scripts/scrape_jsyks.py` | 抓取驾驶员考试网科目一 / 科目四题库 | 生成 JSON、CSV、ZIP 与校验摘要，支持缓存续传 |
-| `scripts/build_tiyu_import.py` | 抓取 JSON → 题屿导入 ZIP | 规范化题型、答案、解析与图片，生成 App 可直接导入的题库包 |
 | `scripts/gen_bank.py` | 初版 801 题参数化生成器 | 历史留存 |
 | `scripts/vendor_backdrop.py` | 从上游 backdrop 仓库源码 vendor 进 `com.kyant.backdrop` | `SRC` 为上游源码本地路径，升级库版本时修改后运行；vendor 后需按 NOTICE 重做 expect/actual 合并等改动 |
 | `scripts/setup_signing.py` | 生成 / 校验 keystore，并写入 GitHub Secrets（`DQ_KEYSTORE_B64` / `DQ_KS_STORE_PASS`） | GitHub Token 经环境变量 `GITHUB_TOKEN` 提供；依赖 `pynacl` |
@@ -595,8 +682,54 @@ python3 scripts/convert_bank.py <题库.csv> [-o app/src/main/assets/questions.j
 | v2.13.0 | 50 | **拍照搜题大升级**：自建 CameraX 相机页（取景框引导+闪光+相册，需相机权限可拒绝）；斜拍自动矫正（行基线测角→转正重识别）；切题重写（题号回落重开/漏号结构强拆/页脚丢弃，专治连体大框）；匹配重写（整串+逐行+滑窗三级分段+包含率，抗截断抗连体） |
 | v2.14.0 | 51 | **拍照搜题单题模式**：默认自动框住一道题只出一张卡（上一题/下一题切换，整页退居切换项）；手指拖画框框哪道搜哪道（框内行重切+缓存题库即时匹配，兜底漏题连体）；取景框改单题横向长条，横握手机可拍 |
 | v2.15.0 | 52 | **标题栏渐进式模糊**：交界处模糊半径沿轴渐变（AGSL 双 pass 可变半径 RenderEffect，7 页面生效，旧蒙版方案彻底移除）；**每日提醒后台保活**：WorkManager→AlarmManager 精确闹钟（进程死也准时）+ 开机重排 + 电池优化白名单"后台运行"弹窗 + 打开自愈补排 |
+| v2.19.24-preview | 80 | **AI 助手（草稿预览）**：刷题页每题底部「问 AI」→ 底部弹窗多轮对话，当前题（题干/选项/正确答案/我的作答/题库解析）自动进上下文，SSE 流式 + 吐字动画；默认 DeepSeek（OpenAI 兼容格式），配置在「设置 → AI 助手」二级弹窗（含测试连接）。RAG 暂不做 |
+| v2.19.54 | 110 | 同步上游 v2.19.53；保留 Markdown 解析、AGP 9 与新版依赖；发布与更新继续使用本仓库 |
+| v2.19.53 | 109 | **答案图与「见解析图」合成一个块**（原先塞在解析里跟逐字浮现的文字叠成一团，现整块放进参考答案框：文字是标题、图是内容，解析列不再放图）；**首页图表切换收成单个按钮**
+| v2.19.52 | 109 | **解析支持插图**（新增「解析图片」列：作图题的答案本身就是一张图，放解析里；解析默认折叠，用户主动点「查看解析」才展开——作答前不剧透）；DB v6（questions +explanationImages 列）；图片在解析文字逐字浮现完之后淡入；导入模板 + Agent 提示词补齐两列区别说明 |
+| v2.19.41 | 99 | **模考设置记忆**（沿用上次配置 + 恢复默认；根因是配置页从不读已存设置，滑杆走硬编码初值而开关有持久化）；新增**产品发布页** GitHub Pages（介绍/Q&A/下载直链，固定名资产 `TiYu-latest.apk`），App 内发布页跳转改指产品页并带兜底 |
+| v2.19.40 | 98 | **解析全 app 收敛为唯一 `ParseBlock`**（六处调用点），默认折叠 + 逐字对焦浮现（20 字/秒、blur 先于 opacity 收干净）；搜索页按用户口径改回「解析随卡片展开、无独立开关」；修 v2.19.39 只改搜索页、刷题与模考未动的漏改 |
+| v2.19.39 | 97 | 搜索结果逐条渐入（alpha+blur+位移并行、错峰接力）；解析恒折叠、改为独立开关；修 v2.19.38：时间轴竖线改用 `drawBehind`（`IntrinsicSize` 与 `AnimatedVisibility` 冲突导致收起无动画）；考试顶栏三按钮统一 44dp；**修 static_check 四轮假检查**（新增段全在出口之后，从未执行） |
+| v2.19.37 | 96 | 修 v2.19.36 的回归：时间轴竖线与卡片高度脱钩导致断成一段段（线只占间距 8%），现按卡片高度自适应并探出底部 10dp |
+| v2.19.36 | 95 | 搜索页折叠态答案不再重复抄选项（卡片高度不再被长选项撑高）；选项圆标字母居中修复（v2.19.16 漏改的副本）；判断题圆标改用共用自绘字形；历程页节点去橙、展开加动画、数据改由 CI 自动生成 |
+| v2.19.35 | 94 | 模考高级选项新增「错题优先」：先抽错题本里的题，不够退到未答、其余已答；与「优先未答」同开时错题优先 |
+| v2.19.35 | 94 | 模考高级选项新增「错题优先」：先抽错题本里的题，不够退到未答、其余已答；与「优先未答」同开时错题优先 |
+| v2.19.34 | 93 | 关于页新增「历程」全屏时间轴（75 版本 / 122 提交，由 `scripts/gen_history.py` 从 git log 生成）；单选「正确答案」不再重复选项全文（搜索折叠态保留） |
+| v2.19.33 | 92 | 模考高级选项新增「打乱选项」：单选/多选乱序、判断题不动，**打乱即隐藏解析**（与即时判定解耦）；视图层乱序、数据层恒原序，错题本不受影响；16 个测试 / 75200 条判定组合验证等价 |
+| v2.19.32 | 91 | 模考高级选项新增「优先未答」：先抽 `attempts=0` 的题，不够再回填已答；题库刷完自动回退，不组不出卷 |
+| v2.19.31 | 90 | **深色模式按钮贴图改用用户直接提供的图**（米白底 + 稀疏褐点），不再做任何反相/偏色/拉伸，只 resize 到 256×256 |
+| v2.19.30 | 89 | **深色纹理重做（修正 v2.19.29 反错对象）**：把浅色模式那张星空图黑白颠倒 + 底色靠主题淡米色 + 1~99 对比拉伸，得「米底黑点」，与深色模式浅米按钮同属一套语言 |
+| v2.19.29 | 88 | **深色模式纹理重做**：浅底水磨石 → 黑底铜金碎屑（黑白颠倒 + 压蓝偏米），与深色页面协调、与浅色星空同属深底 |
+| v2.19.28 | 87 | **强调底纹理铺开**：抽成统一设施 `SurfaceTexture.kt`，覆盖主按钮 / 分段控件滑块 / ConfigChip / FilterChip / 开关轨道五类；判据统一为 `ui.ink`，浅色模式自动用星空、深色模式自动用水磨石；开关纹理按拖动进度渐显 |
+| v2.19.27 | 86 | **星点密度减 30%**（不生成新星点，压暗最暗那批）；**依赖巡检**：kotlinx×2 / core-ktx / lifecycle / activity 已升，`navigation-compose 2.10.2`+`core 1.19.1`+`lifecycle 2.11.0`+`compose-bom` 因强制要求 compileSdk 37 + AGP 9.1 暂缓；液态玻璃 vendor 版已与上游 2.0.1 同步且多两层防御，无需更新 |
+| v2.19.26 | 85 | **墨色主按钮换星空纹理底**（用户提供的原图，等比裁切不拉伸）：全 app 17 处自动生效，三个渲染分支都改；深色模式维持浅底深字 |
+| v2.19.25 | 84 | **撤回 AI 助手**（v2.19.24 擅自转正）：入口/面板/客户端/Markdown/思考计时全删，SettingsStore 七项 AI 配置与 OkHttp 依赖一并移除，回到零联网依赖。`INTERNET` 权限保留（应用更新检查在用）。v2.19.24 的多选 NPE 修复保留 |
+| v2.19.24 | 83 | **修切题库刷题崩溃**：多选题渲染循环里的 `ua!!` 被 v2.19.23 重构挪出 `submitted` 保护范围 → 滚到未作答的多选题必 NPE。全部换安全调用，全工程无 `ua!!`，static_check 逐行扫描。AI 助手转正式版 |
+| v2.19.23 | 79 | **多选判错逐项标注**：正确 / 错选 / 漏选（琥珀色、空心勾选框）；判定区补「你的答案：A、B、C」行与「正确答案」对照；模考页多选同步 |
+| v2.19.22 | 78 | **修用户报告的模考「点不了」真 bug**：`state` 由三态扩到四态（新增「已选中但未判定」），`enabled` 判据定为 `enabled = !judged`——开即时判定则选了即锁、只能下一题；关即时判定则永远可改选，作答区上方加锁定说明 |
+| v2.19.21 | 77 | **「更换壁纸」撤回 v2.19.20 的二级面板，回到点一下直接开相册**；清单同步撤掉为读系统壁纸而加的 `MANAGE_EXTERNAL_STORAGE`，回到「无敏感权限」状态（`WallpaperSync.kt` 保留但无入口无权限） |
+| v2.19.20 | 76 | **「底栏玻璃模糊」→「底栏模糊」**，档位按画面特效分设：液态玻璃=**关/轻/重**（关档完全不挂 blur 效果，退化为纯玻璃），亚克力维持 低/中/高 **更换壁纸改为二级面板**：从相册选取（零权限）/ 同步系统壁纸（Android 13+ 需「所有文件访问权限」，按需引导，不主动申请） |
+| v2.19.19 | 75 | **即时判定开关真的生效**（v2.19.18 照抄刷题页的 `ua == null` 判据，但模考的 `ua` 是点一下就写入的，导致关掉开关仍当场亮答案；同时 `enabled = ua == null` 把「选中后可改答案」也禁掉了，一并恢复）**模考配置项副标题一律 ≤10 字 + 单行省略号** |
+| v2.19.18 | 74 | **考试页与刷题页对齐**（考试页原本内联自绘整套选项与判定区，导致：自绘勾叉在校考页不生效、无答错抖动动画与对错配色、解析排在选项之上）现全部复用共用组件；**抽题随机性修复**（`startExam` 末尾的 `, { it.id }` 把 shuffled 的组内顺序重排回 id 升序，改稳定排序只按题型分组） |
+| v2.19.17 | 73 | **判断题勾叉改用填充多边形**（v2.19.16 的描边折线真机实测『极丑而且不居中』——包围盒居中≠视觉重心居中，勾形长臂墨量把重心拽向左下） |
+| v2.19.16 | 72 | **选项圆标修复**：字母偏下的根因是 Android `includeFontPadding` 默认 true（CJK 留白撑高行盒），置 false 并收 `lineHeight` 后真正居中；**判断题 ✓/✗ 改为 Canvas 自绘**（原字符 `√` 实为根号、`×` 字重不可控）；ABCD 维持默认字母 |
+| v2.19.15 | 71 | **详情浮窗改用 `Popup` 真浮层**（独立窗口绘制在视图树最上方，不占布局、不被裁剪、可自由定位）；`calculatePosition` 提供已量尺寸 → 删除自测量状态与 v2.19.11 的鸡生蛋死锁；`dismissOnClickOutside` 白送「点别处收起」 |
+| v2.19.14 | 70 | **浮窗冲出卡片修复**（定位改三态：上方/下方/贴底，上下边永不越出网格）**网格区 clipToBounds 兜底** **卡片高度锁死**（顶行四文本与脚注全加 `maxLines=1`，文案长短不再撑高卡片） |
+| v2.19.13 | 69 | **详情浮窗改版**（三行窄版，不再盖住图例与月份标签；箭头方向与浮窗坐标共用同一 `showBelow` 判定；选中描边 1.5dp→1dp/55%） |
+| v2.19.12 | 68 | **渐进式模糊整体移除**（`ProgressiveBlur.kt` 整个删除，四个版本、十余次尝试作废；static_check 改为封锁其复活）**详情浮窗重做**（交互由长按改为轻点，修掉『只有框没有窗』的死锁，外观按参考图改为深色小窗 + 三角箭头） |
+| v2.19.11 | 67 | **热力图周数 18→22**（格子 13→10dp，网格矮约 21dp）**末列挤压修复**（列宽取整后由每列 `width(pitch)` 声明，不再由父级分配）**新增长按详情浮窗**（显示当日题量与正确率）**底栏渐隐减效**（6dp/32dp → 4dp/26dp） |
+| v2.19.10 | 66 | **热力图信息重排**：末列孤条（未来日按 0 档绘制，整图恒为矩形）；砍掉左侧星期栏（用户裁定）；数字重排为左右三行同构，百分数必须带标签（正确率 X%）、答对/答错必须标明「今日」、里程碑注解移到连击正下方；图例移入脚注行 |
+| v2.19.9 | 65 | **热力图修复「过密/版式失序」**：v2.19.8 重写时把格子行间距丢了（126 格连成实心板），改用 `Arrangement.spacedBy` 统一管尺寸与间距；月份标签允许溢出所在列（「10月」不再截成「10」）；周数 13→18、上限放宽至 22dp 以铺满；末列只画到今天，右缘收口 |
+| v2.19.8 | 64 | **热力图排版修复**：格子尺寸改按可用宽度算（`BoxWithConstraints` 反推列距，13 列铺满，写死 13.dp 会在宽屏右侧空一大块）；周内标签按行号取（此前逐个堆叠，「日」错行到第 4 行）；月份标签去掉固定高度（12.dp 裁掉 9.sp 的字）；顶行左右改同构、顶端对齐 |
+| v2.19.7 | 63 | **首页打卡卡重构**：连击卡+今日卡合并为全宽单卡，中间嵌 13 周热力图（GitHub 贡献图形状，分档只看题量不看正确率，今天加描边，未来日期留空）；去掉里程碑进度条；修今日 0 题显示「正确 0%」的假数据 |
+| v2.19.6 | 62 | **回归修复：v2.19.5 的整屏皆糊**——`createRuntimeShaderEffect` 会快照 uniform 状态，块内就地写 uH 进不去，着色器带 uH=0 导致底边 saturate 每行都饱和成 1；uH 与 Offscreen 均退回 v2.19.2 机制 |
+| v2.19.5 | 61 | **退回 Agora 原制**（25 抽头/float4/二次缓动全部撤销，真机实测更乱）**过渡带 43→32dp**（64→43→32）**算力优化**（RenderEffect 改为一次建好不再每帧分配；移除与 renderEffect 重复的 Offscreen 全屏缓冲；`drawWithContent` 仅降级路径挂载；容器高度改每帧就地写 uniform） |
+| v2.19.3 | 59 | **斜坡 64→43dp、最大半径 6→5dp；抽头 9→25 专治『带点』**（Agora 原版 9 抽头间距 0.6·s，6dp 半径下抽头相距 ~11px、双线性仅覆盖 2px，覆盖率<20%，高频内容被拍成摩尔纹；Agora 聊天气泡是纯色块所以没暴露，本项目列表全是高频内容）累加改 float4、斜坡改二次缓动 |
+| v2.19.2 | 58 | **底缘模糊铺满全部 5 个 Tab 页**（首页/练习配置/模考配置/错题本/设置统一挂 `Modifier.bottomEdgeBlur()`，底栏几何收口到单点维护） |
+| v2.19.1 | 57 | 顶栏整体还原为原样（用户裁定：不要悬浮、不要胶囊）；顺带撤除 `LocalScrollBackdrop` |
+| v2.19.0 | 56 | **渐进式模糊第四次、换掉整条路线**（参考 newo-ether/Agora 的 GradientBlur：可变半径 RenderEffect 直接挂滚动区，单层单效果零接缝，9 抽头可分离核，不再做背景采样）**顶栏改悬浮玻璃条**（问候语+题库切换+设置浮于内容之上，滚动区铺满整屏从底下穿过） |
+| v2.18.0 | 55 | **渐进式模糊重做**（v2.17.0 分层叠加真机实测满屏横线+底栏糊穿，本版推翻：单节点单次模糊+渐变 alpha，带内零裁剪接缝）**模考即时判定**（可选制：模考配置页高级选项新增开关，关=全卷交后统核，开=逐题当场验得失，判分口径不变） |
+| v2.17.0 | 54 | **模考组卷丢题型修复**（`startExam` 误把持久化题型排序当遍历白名单，多选/填空/简答整类被静默丢弃，`counts` 再大也抽不到；多选拉满直接空卷死局）**拍照搜题/OCR 整体下线**（连带摘掉 NDK 依赖，构建不再需要 2GB 工具链）**渐进式模糊第三次实现**（改走分层固定半径路线，绕开连续可变半径的老路）**依赖保守档升级**（Room 2.8.5 / DataStore 1.2.1 / core-ktx 1.17.0） |
 | v2.16.0 | 53 | **安装包瘦身 58→约 44MB**：OCR 换 PaddleOCR PP-OCRv4 + MNN 推理（libdroneocr.so 薄封装 + vendor libMNN.so 双 ABI），ML Kit bundled 中文识别（约 14MB 模型+引擎）移除；**模型按需下载**：不随 APK 分发，首次点拍照搜题弹窗内下载（ModelScope 国内直连，约 15MB 一次，字节数+SHA-256 双校验、双线路互备、可取消/失败重试，filesDir 离线复用，无设置页入口）；渐进式模糊整体撤除（v2.15.0 实测后裁定），界面回到此前样式 |
-| v2.17.0 | 54 | **解析支持 Markdown 排版**：刷题、搜索结果与错题回顾统一使用 Markdown 渲染，支持标题、列表、引用等结构；**工具链与 AndroidX 依赖升级**（AGP 9.1.1 / Gradle 9.7.1 / Kotlin 2.4.20 / compileSdk 37）；仓库及更新链路迁移至 `dadaluo/TiYu` |
 
 完整变更明细见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -616,7 +749,7 @@ python3 scripts/convert_bank.py <题库.csv> [-o app/src/main/assets/questions.j
 ## 致谢
 
 - [Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) —— 液态玻璃核心能力来源（backdrop 库 + shapes，Apache-2.0，vendor 并入并修改，见 [NOTICE](NOTICE)）
-- [Jetpack Compose](https://developer.android.com/compose) / [Room](https://developer.android.com/training/data-storage/room) / [CameraX](https://developer.android.com/media/camera/camerax) —— AndroidX 核心组件
+- [Jetpack Compose](https://developer.android.com/compose) / [Room](https://developer.android.com/training/data-storage/room) / [WorkManager](https://developer.android.com/topic/libraries/architecture/workmanager) —— AndroidX 全家桶
 - [Noto Sans SC / Noto Serif SC](https://fonts.google.com/noto) 与 [霞鹜文楷 LXGW WenKai](https://github.com/lxgw/LxgwWenKai) —— 内置阅读字体（OFL，子集化嵌入，见 FONT_LICENSES）
 - 《无人机装调题库（含解析）》 —— 题库内容由需求方提供
 

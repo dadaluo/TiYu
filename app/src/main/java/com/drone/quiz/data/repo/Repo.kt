@@ -34,7 +34,10 @@ data class Question(
     val answer: Int,           // single/judge：下标；multi：位掩码
     val answerText: String,    // blank：各空答案（|| 分空、| 分变体）；short：参考答案
     val explanation: String,
-    val images: List<String> = emptyList() // v2.8.5：题目图片文件名（存于 bank_images/<bankId>/）
+    val images: List<String> = emptyList(), // v2.8.5：题目图片文件名（存于 bank_images/<bankId>/）
+    // v2.19.52：解析里的图片。作图题的答案本身就是一张图，只能放解析——
+    // 放 images 会在作答前把答案露出来。
+    val explanationImages: List<String> = emptyList()
 ) {
     val isJudge: Boolean get() = type == QuestionTypes.JUDGE
 
@@ -54,13 +57,20 @@ data class Question(
     val blankCount: Int
         get() = Regex("_{3,}").findAll(text).count()
 
-    /** 正确答案的可读文本（成绩页 / 解析） */
-    fun correctAnswerText(): String = when (type) {
+    /**
+     * 正确答案的可读文本（成绩页 / 解析）。
+     *
+     * @param brief true = 单选只给字母（`B`），不给「B·选项全文」。
+     *   判定结果区里四个选项就在上方摆着，再把选项文字抄一遍纯属冗余
+     *   （用户反馈：「把选项全部抄一遍，其实不用再显示这个了」）。
+     *   但搜索结果折叠态只显示题干、选项要展开才看得到，那里**必须**给全文——
+     *   只写个「B」用户无从对照。所以按调用场景传，不是一刀切。
+     */
+    fun correctAnswerText(brief: Boolean = false): String = when (type) {
         QuestionTypes.JUDGE -> if (answer == 0) "正确" else "错误"
         QuestionTypes.SINGLE -> {
             val label = optionLabel(answer, false)
-            val opt = options.getOrNull(answer).orEmpty()
-            "$label·$opt"
+            if (brief) label else "$label·${options.getOrNull(answer).orEmpty()}"
         }
         QuestionTypes.MULTI -> multiAnswerSet.sorted().joinToString("、") { optionLabel(it, false) }
         QuestionTypes.BLANK -> blankAnswers.joinToString("；") { vs ->
@@ -113,6 +123,19 @@ class Repo(private val db: AppDatabase, private val appContext: Context) {
     suspend fun bankCount(bankId: String): Int = withContext(Dispatchers.IO) {
         qDao.countByBank(bankId)
     }
+
+    /**
+     * 题库内「从未作答过」的题量（v2.19.32：模考优先未答开关的说明文案用）。
+     * 与 startExam 里 unseenIdsByType 同一口径。
+     */
+    fun unseenCount(bankId: String) = qDao.unseenCountByBankFlow(bankId)
+
+    /**
+     * 题库内「在错题本里（未被移除）」的题量（v2.19.35：错题优先开关的说明文案用）。
+     * removed=1 的不算——那是连续答够次数「毕业」了的。
+     */
+    fun activeWrongCount(bankId: String): Flow<Int> =
+        wDao.activeWrongCountByBankFlow(bankId)
 
     /**
      * 重命名题库（v2.8.7，用户反馈"导入的题库没办法重命名"）。
@@ -269,7 +292,9 @@ class Repo(private val db: AppDatabase, private val appContext: Context) {
         val savedNames = HashMap<String, String>()   // key = 引用名小写
         if (images.isNotEmpty()) {
             val taken = mutableSetOf<String>()
-            preview.ok.flatMap { it.images }.distinct().forEach { ref ->
+            // 题目图 + 解析图都要落盘（v2.19.52）。
+            // 漏掉解析图 = 作图题的答案图在 App 里永远加载不出来。
+            preview.ok.flatMap { it.images + it.explanationImages }.distinct().forEach { ref ->
                 val key = ref.lowercase()
                 val bytes = images[key] ?: return@forEach
                 savedNames[key] = QuestionImages.saveBankImage(appContext, bankId, ref, bytes, taken)
@@ -287,7 +312,10 @@ class Repo(private val db: AppDatabase, private val appContext: Context) {
                 explanation = p.explanation,
                 bankId = bankId,
                 answerText = p.answerText,
-                images = json.encodeToString(p.images.map { savedNames[it.lowercase()] ?: it })
+                images = json.encodeToString(p.images.map { savedNames[it.lowercase()] ?: it }),
+                explanationImages = json.encodeToString(
+                    p.explanationImages.map { savedNames[it.lowercase()] ?: it }
+                )
             )
         }
         db.withTransaction {
@@ -380,7 +408,10 @@ class Repo(private val db: AppDatabase, private val appContext: Context) {
         answer = answer,
         answerText = answerText,
         explanation = explanation,
-        images = runCatching { json.decodeFromString<List<String>>(images) }.getOrDefault(emptyList())
+        images = runCatching { json.decodeFromString<List<String>>(images) }.getOrDefault(emptyList()),
+        explanationImages = runCatching {
+            json.decodeFromString<List<String>>(explanationImages)
+        }.getOrDefault(emptyList())
     )
 
     /**
@@ -458,30 +489,80 @@ class Repo(private val db: AppDatabase, private val appContext: Context) {
      * 组卷（v2.8.0）：按题型分别抽题、按题型顺序拼卷（修复选择/判断混排）。
      * @param counts 题型→题数（UI 依据题库实际拥有的题型自适应生成）
      * @param typeOrder 题型顺序；空 = 默认 单选→多选→填空→判断→简答
+     * @param preferUnseen v2.19.32：优先从未作答过的题里抽；该题型未答题不够时才回填已答题
      */
     suspend fun startExam(
         bankId: String,
         counts: Map<String, Int>,
         durationSec: Int,
         typeOrder: List<String>,
-        passLine: Int = 60 // v2.8.6：开考时设定的合格线，随记录存档供成绩单回显
+        passLine: Int = 60, // v2.8.6：开考时设定的合格线，随记录存档供成绩单回显
+        preferUnseen: Boolean = true, // v2.19.32 默认开：题库 800 题、模考每次 50，重复率天然很高
+        shuffleOptions: Boolean = false, // v2.19.33 选项打乱：非 0 时落库 optSalt，视图层乱序、数据层恒原序
+        preferWrong: Boolean = false // v2.19.35 错题优先：先抽错题本（removed=0）里的题，不够再退到优先未答/全随机
     ): Pair<Long, List<Question>> = withContext(Dispatchers.IO) {
-        val order = typeOrder.filter { it in QuestionTypes.canonicalOrder }
-            .ifEmpty { QuestionTypes.canonicalOrder }
+        // v2.17.0 关键修复：order 是「排序提示」，不是遍历白名单。
+        // 病灶（与 v2.8.4 在 ExamScreens 修的是同一类，但只修了配置页那一半）：
+        // typeOrder 来自 settings.examTypeOrder，全局持久化。用户在只有单选+判断的题库里
+        // 拖过题型排序后，存下的 ["single","judge"] 会带到任何新题库；而配置页的 activeTypes
+        // 已按 bankTypes 补齐缺失题型，plannedCounts 照样算出 multi 的份数、按钮也照样显示
+        // 「共 50 题」，但真正抽题时下面这段只遍历 order —— 不在 order 里的题型，
+        // counts 再大也永远不会被消费。表现为：50 题里单选多选各半 → 只抽出 25 道单选；
+        // 多选拉满 100% → 一道都抽不出，startExam 走 0L to emptyList() 短路，
+        // 考试页拿到空题目列表、submit 又被 questions.isNotEmpty() 拦住 → 空白页死局。
+        // 修法：以 counts 的 key 为准（配置页算过什么就抽什么），order 只负责排序，
+        // order 里没有的题型追加到末尾，保证「计划的」与「抽到的」恒等。
+        val hint = typeOrder.filter { it in QuestionTypes.canonicalOrder }
+        val order = (hint + QuestionTypes.canonicalOrder).distinct()
+        val drawTypes = (counts.keys.filter { it in QuestionTypes.canonicalOrder } + order).distinct()
         val pickedIds = ArrayList<Long>()
-        order.forEach { type ->
+        drawTypes.forEach { type ->
             val want = counts[type] ?: 0
             if (want > 0) {
                 val ids = qDao.idsByFilter(bankId, null, type)
-                if (ids.isNotEmpty()) pickedIds += ids.shuffled().take(want)
+                if (ids.isNotEmpty()) {
+                    // 抽题优先级（从高到低，逐级回填，任何一级都不会导致组不出卷）：
+                    //   错题本（removed=0，v2.19.35）→ 未答（attempts=0，v2.19.32）→ 其余已答
+                    //
+                    // 为什么错题压过未答：一道从未答过的题不可能在错题本里（答错过才进），
+                    // 两个池天然不重叠；「先复习错题」比「先见新题」更贴近模考的补救意图，
+                    // 所以错题取满 want 之后才轮到未答。
+                    //
+                    // 为什么逐级回填而不是各取一半：任一层取满即可，抽不满再往下退。
+                    // 严格保证「题库刷完照样能组出卷」——否则重演 v2.17.0 的空白页死局。
+                    //
+                    // 放弃的考卷不写 question_stats（只有 submitExam 写），所以放弃过的那份
+                    // 下次仍算未答、仍会被抽到；错题本则要交卷判错才进。
+                    val wrong = if (preferWrong) {
+                        // 注意是 wDao 不是 qDao——错题本查询挂在 WrongDao 上
+                        wDao.activeWrongIds(bankId, type, null).toSet()
+                    } else emptySet()
+                    val unseen = if (preferUnseen) {
+                        qDao.unseenIdsByType(bankId, type).toSet()
+                    } else emptySet()
+                    val rest = ids.filter { it !in wrong && it !in unseen }
+
+                    val chosen = ArrayList<Long>(want)
+                    for (pool in listOf(wrong, unseen, rest.toSet())) {
+                        if (chosen.size >= want) break
+                        pool.filter { it !in chosen }.shuffled()
+                            .forEach { if (chosen.size < want) chosen += it }
+                    }
+                    pickedIds += chosen
+                }
             }
         }
         // 题库为空时防御性短路：不建卷、不写 exam_records，返回空列表由 UI 提示
         if (pickedIds.isEmpty()) return@withContext 0L to emptyList()
         val byId = qDao.byIds(pickedIds).associateBy { it.id }
         val typeRank = order.withIndex().associate { (i, t) -> t to i }
+        // v2.19.18 修「抽题不够随机」：此前末尾的 `, { it.id }` 把同一题型内的
+        // 随机顺序**重排回了 id 升序**——集合是随机的、顺序却每次一模一样，
+        // 用户每次模考看到的题型内题目次序完全相同（用户反馈）。
+        // 现只按题型分组（用 Kotlin 的稳定排序），**保留 shuffled 后的组内顺序**；
+        // 题型之间的先后仍按用户在配置页拖的 examTypeOrder 走。
         val qs = pickedIds.mapNotNull { byId[it]?.toQuestion() }
-            .sortedWith(compareBy({ typeRank[it.type] ?: 99 }, { it.id }))
+            .sortedBy { typeRank[it.type] ?: 99 }
         val examId = db.withTransaction {
             val id = eDao.insertExam(
                 ExamRecordEntity(
@@ -498,7 +579,10 @@ class Repo(private val db: AppDatabase, private val appContext: Context) {
                             QuestionTypes.BLANK to qs.count { it.type == QuestionTypes.BLANK },
                             QuestionTypes.SHORT to qs.count { it.type == QuestionTypes.SHORT }
                         ).filterValues { it > 0 }
-                    )
+                    ),
+                    // v2.19.33：会话盐。0 = 不打乱（哨兵值，不可与随机值冲突）。
+                    // 落库后进程被杀再恢复，resumeExam 依此还原与开考时相同的选项顺序。
+                    optSalt = if (shuffleOptions) OptionShuffle.newSalt() else 0L
                 )
             )
             eDao.insertAnswers(qs.map { ExamAnswerEntity(examId = id, qid = it.id) })
@@ -610,6 +694,14 @@ class Repo(private val db: AppDatabase, private val appContext: Context) {
     )
 
     fun recentExams(bankId: String): Flow<List<ExamRecordEntity>> = eDao.recentExams(bankId, 20)
+
+    /**
+     * 最近的模考（v2.19.50 首页「模考走势」用）。
+     * [recentExams] 固定取 20 条，其中大半是未交卷的进行中记录，
+     * 真正画图只需要最近几条已出分的。
+     */
+    fun recentScoredExams(bankId: String, n: Int = 8): Flow<List<ExamRecordEntity>> =
+        eDao.recentScoredExamsFlow(bankId, n)
 
     /**
      * 从数据库重建历史模考成绩（供"最近模考"记录点击进入成绩页使用）。
@@ -766,7 +858,74 @@ class Repo(private val db: AppDatabase, private val appContext: Context) {
         if (a == 0) 0f else c.toFloat() / a
     }
 
+    /**
+     * 预估通过率的输入采集（v2.19.48）。
+     *
+     * 一律按**题型**分别统计——因为预估针对的是"按题库真实配比考"的表现，
+     * 而模考/刷题时的题型构成是用户自己调的，不能直接拿来当权重。
+     */
+    data class PassInputs(
+        val exams: List<com.drone.quiz.data.PassEstimate.ExamSample>,
+        val bankTypeMix: Map<String, Float>,
+        val practiceAcc: Map<String, Float>,
+        val practiceDistinct: Int,
+        val coverage: Float
+    )
+
+    suspend fun passInputs(bankId: String, now: Long = System.currentTimeMillis()): PassInputs =
+        withContext(Dispatchers.IO) {
+            // 题库真实配比：某题型题数 / 全库题数
+            val totalN = qDao.countByBank(bankId).coerceAtLeast(1)
+            val perType = qDao.byIds(qDao.idsByFilter(bankId, null, null))
+                .groupingBy { it.type }.eachCount()
+            val mix = perType.mapValues { (_, n) -> n.toFloat() / totalN }
+
+            // 模考：按 (场次, 题型) 聚合成样本
+            val rows = eDao.typeBreakdown(bankId)
+            val byExam = rows.groupBy { it.examId }
+            val exams = byExam.entries
+                .sortedByDescending { e -> rows.first { it.examId == e.key }.startedAt }
+                .take(com.drone.quiz.data.PassEstimate.MAX_EXAMS)
+                .map { (examId, rs) ->
+                    com.drone.quiz.data.PassEstimate.ExamSample(
+                        startedAt = rs.first().startedAt,
+                        total = rs.sumOf { it.answered },
+                        byType = rs.associate { it.type to (it.correct to it.answered) }
+                    )
+                }
+
+            // 刷题：按题型，正确率 = 正确次数 / 作答次数
+            val pRows = rDao.practiceTypeBreakdown(bankId)
+            val pAcc = pRows.associate { r ->
+                r.type to (if (r.attempts > 0) r.correctSum.toFloat() / r.attempts else 0f)
+            }
+            val pDistinct = pRows.sumOf { it.distinctQuestions }
+
+            val answered = rDao.answeredDistinctByBank(bankId)
+
+            PassInputs(
+                exams = exams,
+                bankTypeMix = mix,
+                practiceAcc = pAcc,
+                practiceDistinct = pDistinct,
+                coverage = (answered.toFloat() / totalN).coerceIn(0f, 1f)
+            )
+        }
+
     data class DayStat(val label: String, val isToday: Boolean, val answered: Int, val correct: Int)
+
+    /** 热力图上的一天：答题数用于分档着色，正确数用于长按详情浮窗 */
+    data class HeatDay(val date: String, val answered: Int, val correct: Int)
+
+    /**
+     * 打卡热力图用：近 [n] 天的「日期 → 当日答题数」。
+     * 与 [streakDays] 同为**全局**数据（不按题库隔离），因为打卡是跨题库的习惯。
+     * 返回按日期升序；当天没练的日子不在结果里（调用方补 0）。
+     */
+    suspend fun heatmapDays(n: Int): List<HeatDay> = withContext(Dispatchers.IO) {
+        rDao.recentStreaks(n).sortedBy { it.date }
+            .map { HeatDay(it.date, it.answered, it.correct) }
+    }
 
     suspend fun streakDays(): Int = withContext(Dispatchers.IO) {
         val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.CHINA)

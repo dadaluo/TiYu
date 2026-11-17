@@ -60,18 +60,24 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.drone.quiz.ServiceLocator
+import com.drone.quiz.data.repo.OptionShuffle
 import com.drone.quiz.data.repo.Question
 import com.drone.quiz.data.repo.QuestionTypes
+import com.drone.quiz.data.repo.pickedAnswerText
 import com.drone.quiz.data.repo.Repo
 import com.drone.quiz.data.repo.UserAnswer
 import com.drone.quiz.data.repo.judgeAnswer
 import com.drone.quiz.data.repo.isAnswered
 import com.drone.quiz.data.repo.optionLabel
 import com.drone.quiz.screens.common.BlankInlineFields
+import com.drone.quiz.screens.common.OptionRow
+import com.drone.quiz.screens.common.ResultHeader
+import com.drone.quiz.screens.common.ParseBlock
 import com.drone.quiz.screens.common.QuestionImageStrip
 import com.drone.quiz.screens.common.ScreenTitle
 import com.drone.quiz.screens.common.SectionLabel
@@ -117,6 +123,13 @@ object ExamSessionHolder {
     var questions: List<Question> = emptyList()
     var durationSec: Int = 0
     var outcome: Repo.ExamOutcome? = null
+
+    /**
+     * v2.19.33 本场选项乱序会话盐（0 = 不打乱）。
+     * 视图层按它算排列并渲染乱序题，落库前一律换算回原始下标——
+     * questions 里存的**始终是原始顺序**，这里只是渲染期的映射依据。
+     */
+    var optSalt: Long = 0
 }
 
 // ==================== 配置页 ====================
@@ -143,14 +156,41 @@ fun ExamConfigScreen(
     var bankTypeCounts by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
     var showAdvanced by remember { mutableStateOf(false) }
     var includeShort by remember { mutableStateOf(settings.examIncludeShort) }
+    // v2.18.0 模考即时判定（可选制）：默认关闭 = 全卷交后统核正误；
+    // 开启 = 逐题作答当场验得失。仅改显示时机，判分与成绩单口径不变。
+    var instantJudge by remember { mutableStateOf(settings.examInstantJudge) }
+    // v2.19.32 模考优先未答：默认开。未答题抽完才回填已答题，题库刷完也不组不出卷。
+    var preferUnseen by remember { mutableStateOf(settings.examPreferUnseen) }
+    // v2.19.33 选项打乱（仅模考）。与 instantJudge 完全解耦：
+    // 开打乱时判定照常给对错与正确答案，只是不显示解析文字（解析里写死了「选C」）。
+    var shuffleOptions by remember { mutableStateOf(settings.examShuffleOptions) }
+    // v2.19.35 错题优先：先抽错题本里的题。与 preferUnseen 同开时错题压过未答。
+    var preferWrong by remember { mutableStateOf(settings.examPreferWrong) }
+    // 说明文案用的「未答 N 题」——开了开关却看不到效果依据，用户会以为没生效
+    var unseenCount by remember { mutableIntStateOf(0) }
+    // v2.19.35：本库在错题本里的题量（开关说明文案用）
+    var activeWrongCount by remember { mutableIntStateOf(0) }
     var typeOrder by remember { mutableStateOf<List<String>>(emptyList()) }
     // v2.8.3 题型构成：自动按库内占比 / 手动拖比例滑杆（百分比，联动让出份额）
     var autoMix by remember { mutableStateOf(true) }
     var ratios by remember { mutableStateOf<Map<String, Int>>(emptyMap()) } // 题型 → 0..100
+    // v2.19.41：从已存配置回填过（用于「恢复上次设置」提示）
 
     val recentExams by remember(settings.currentBank) {
         ServiceLocator.repo.recentExams(settings.currentBank)
     }.collectAsState(initial = emptyList())
+
+    // 未答题数随 stats 变化实时刷新（交卷/刷题写入 question_stats 后自动重算）
+    val unseenFlow by remember(settings.currentBank) {
+        ServiceLocator.repo.unseenCount(settings.currentBank)
+    }.collectAsState(initial = 0)
+    LaunchedEffect(unseenFlow) { unseenCount = unseenFlow }
+
+    // 错题数同样实时刷新（交卷判错进错题本、连续答对毕业移出后都会变）
+    val wrongFlow by remember(settings.currentBank) {
+        ServiceLocator.repo.activeWrongCount(settings.currentBank)
+    }.collectAsState(initial = 0)
+    LaunchedEffect(wrongFlow) { activeWrongCount = wrongFlow }
 
     LaunchedEffect(settings.currentBank) {
         runCatching {
@@ -163,8 +203,58 @@ fun ExamConfigScreen(
             bankTypeCounts = ServiceLocator.repo.bankTypeCounts(bank)
             typeOrder = st.examTypeOrder.ifEmpty { QuestionTypes.canonicalOrder }
             includeShort = st.examIncludeShort
-            autoMix = st.examAutoMix
-            ratios = autoRatios(types, bankTypeCounts)
+            instantJudge = st.examInstantJudge
+            preferUnseen = st.examPreferUnseen
+            shuffleOptions = st.examShuffleOptions
+            preferWrong = st.examPreferWrong
+
+            // v2.19.47 重写模考设置记忆。
+            //
+            // 三个叠加的 bug（用户实机：判断题占比 30%→20%，杀 App 重进仍是 30%）：
+            //  ① **存错了量**。存的是 counts（题型→题数），可用户拖的是 judgeRatio
+            //     （判断题占比）。counts 是「占比 × 总题数」算完之后、再被题库可用
+            //     题量裁剪过的**结果**；默认库 640 单选 + 160 判断，20% 落到 50 题
+            //     上和 30% 会被裁到同一个数，所以从 counts 反推占比必然失真。
+            //     → 现在直接存用户意图：judgeRatio / manualRatios / autoMix。
+            //  ② **judgeRatio 从来没被回填**。回填只处理了 count/duration/ratios，
+            //     judgeRatio 一直是 `remember { mutableStateOf(0.3f) }` 硬编码。
+            //  ③ **回填完立刻被冲掉**。下面 `autoMix = st.examAutoMix` 与
+            //     `ratios = autoRatios(...)` 写在 if 之外无条件执行，把刚恢复的值
+            //     又覆盖成默认值（v2.19.41 引入时留下的）。
+            //
+            // 旧数据（只有 counts、没有 judgeRatio 字段）仍按 counts 折算，保持兼容。
+            var restored = false
+            runCatching {
+                ServiceLocator.settings.examQuickConfig()?.takeIf { it.counts.isNotEmpty() }
+            }.getOrNull()?.let { qc ->
+                val sum = qc.counts.values.sum()
+                if (sum > 0) {
+                    count = sum
+                    durationMin = qc.durationMin
+                    autoMix = qc.autoMix
+                    if (qc.manualRatios.isNotEmpty()) {
+                        ratios = qc.manualRatios
+                    }
+                    // judgeRatio 直接取存的值；旧数据没有该字段才退回默认值
+                    judgeRatio = qc.judgeRatio.coerceIn(0f, 1f)
+                    if (qc.manualRatios.isEmpty()) {
+                        // ── 兼容老存档：按 counts 折算手动比例 ──
+                        val avail = ServiceLocator.repo.bankTypeCounts(bank)
+                        val denom = sum.toFloat().coerceAtLeast(1f)
+                        var r = qc.counts.entries.associate { (t, n) ->
+                            t to (((n / denom) * 100f).roundToInt())
+                        }
+                        r = fixRatiosRoundOff(r, qc.counts.keys.toList(), avail)
+                        ratios = r
+                    }
+                    restored = true
+                }
+            }
+            // 只有「没有可恢复的配置」时才用题库自动配比，避免覆盖刚恢复的值
+            if (!restored) {
+                autoMix = st.examAutoMix
+                ratios = autoRatios(types, bankTypeCounts)
+            }
         }
     }
 
@@ -246,6 +336,12 @@ fun ExamConfigScreen(
                 .verticalScroll(scrollState)
                 .padding(horizontal = 20.dp)
         ) {
+
+            // v2.19.41：已按上次设置填好，明确告诉用户"这是上次的、不用重设"，
+            // 否则用户会以为这还是默认值、又手动调一遍（那就白记忆了）。
+            // v2.19.47：不再显示「已沿用上次的设置 / 恢复默认」提示条。
+            // 设置记忆是默认行为，无需向用户播报——多此一举反而让人以为
+            // 「现在是默认值」而手动再调一遍。功能保留，只是安静地生效。
 
             if (classicMode) {
                 // ---- 考试设置：2×2 紧凑网格（单选+判断题库） ----
@@ -531,6 +627,34 @@ fun ExamConfigScreen(
                                         }
                                     }
                                 }
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text("即时判定", color = ui.text, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                        Text(
+                                            // v2.19.19：副标题一律 ≤10 字（用户反馈原来的长文换行很别扭），
+                                            // 再加 maxLines=1 + 省略号兜底——将来文案变长也不会换行。
+                                            if (instantJudge) "逐题作答，当场验正误"
+                                            else "交卷后统核正误",
+                                            color = ui.textSub, fontSize = 11.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.padding(top = 2.dp)
+                                        )
+                                    }
+                                    GlassToggle(
+                                        checked = { instantJudge },
+                                        onCheckedChange = { v ->
+                                            instantJudge = v
+                                            scope.launch { ServiceLocator.settings.setExamInstantJudge(v) }
+                                        },
+                                        backdrop = backdrop
+                                    )
+                                }
                                 if ("short" in bankTypes) {
                                     Row(
                                         Modifier
@@ -541,8 +665,9 @@ fun ExamConfigScreen(
                                         Column(Modifier.weight(1f)) {
                                             Text("含简答题", color = ui.text, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                                             Text(
-                                                "简答题提交后对照参考答案自评计分",
+                                                "提交后对照答案自评",
                                                 color = ui.textSub, fontSize = 11.sp,
+                                                maxLines = 1, overflow = TextOverflow.Ellipsis,
                                                 modifier = Modifier.padding(top = 2.dp)
                                             )
                                         }
@@ -556,9 +681,98 @@ fun ExamConfigScreen(
                                         )
                                     }
                                 }
+                                // v2.19.35 错题优先：排在「优先未答」前面——
+                                // 两个同开时错题压过未答，UI 顺序也跟着这个优先级走。
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text("错题优先", color = ui.text, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                        Text(
+                                            when {
+                                                activeWrongCount == 0 -> "错题本是空的，本卷等同不开启"
+                                                preferUnseen -> "先抽错题的 $activeWrongCount 题，再补没做过的"
+                                                else -> "先抽错题本里的 $activeWrongCount 题"
+                                            },
+                                            color = ui.textSub, fontSize = 11.sp,
+                                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.padding(top = 2.dp)
+                                        )
+                                    }
+                                    GlassToggle(
+                                        checked = { preferWrong },
+                                        onCheckedChange = { v ->
+                                            preferWrong = v
+                                            scope.launch { ServiceLocator.settings.setExamPreferWrong(v) }
+                                        },
+                                        backdrop = backdrop
+                                    )
+                                }
+                                // v2.19.32 优先未答：与「含简答题」同级的独立开关。
+                                // 放在「长按拖动调整先后」之前，那行字只服务于题型顺序列表。
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text("优先未答", color = ui.text, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                        Text(
+                                            when {
+                                                preferWrong -> "错题取完后，从这里补 $unseenCount 题"
+                                                unseenCount > 0 -> "先抽没做过的 $unseenCount 题，不够再回填"
+                                                else -> "题库已刷完，本卷全部来自已做过的题"
+                                            },
+                                            color = ui.textSub, fontSize = 11.sp,
+                                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.padding(top = 2.dp)
+                                        )
+                                    }
+                                    GlassToggle(
+                                        checked = { preferUnseen },
+                                        onCheckedChange = { v ->
+                                            preferUnseen = v
+                                            scope.launch { ServiceLocator.settings.setExamPreferUnseen(v) }
+                                        },
+                                        backdrop = backdrop
+                                    )
+                                }
+                                // v2.19.33 选项打乱。与即时判定**完全解耦**：可以同开。
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text("打乱选项", color = ui.text, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                        Text(
+                                            if (shuffleOptions)
+                                                "单选/多选乱序 · 不显示解析 · 判断题不动"
+                                            else
+                                                "单选/多选每次开考重新打乱",
+                                            color = ui.textSub, fontSize = 11.sp,
+                                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.padding(top = 2.dp)
+                                        )
+                                    }
+                                    GlassToggle(
+                                        checked = { shuffleOptions },
+                                        onCheckedChange = { v ->
+                                            shuffleOptions = v
+                                            scope.launch { ServiceLocator.settings.setExamShuffleOptions(v) }
+                                        },
+                                        backdrop = backdrop
+                                    )
+                                }
                                 Text(
-                                    "题型顺序 · 长按拖动调整（先做哪种题型）",
+                                    "长按拖动调整先后",
                                     color = ui.textSub, fontSize = 11.sp,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.padding(top = 14.dp)
                                 )
                                 ReorderableTypeList(
@@ -570,7 +784,7 @@ fun ExamConfigScreen(
                                 )
                                 // v2.8.3：解释可排序的题型范围（只有单选+判断的题库用户会疑惑"怎么只有两个"）
                                 Text(
-                                    "当前题库共 ${bankTypes.size} 种题型，未导入的题型不参与排序",
+                                    "共 ${bankTypes.size} 种题型 · 未导入的不参与",
                                     color = ui.textSub, fontSize = 10.sp,
                                     modifier = Modifier.padding(top = 2.dp, start = 4.dp)
                                 )
@@ -591,7 +805,10 @@ fun ExamConfigScreen(
                                 counts = plannedCounts,
                                 durationSec = durationMin * 60,
                                 typeOrder = typeOrder.ifEmpty { QuestionTypes.canonicalOrder },
-                                passLine = st.passScore // v2.8.6：开考时定格合格线，成绩单回显
+                                passLine = st.passScore, // v2.8.6：开考时定格合格线，成绩单回显
+                                preferUnseen = preferUnseen, // v2.19.32：优先未作答过的题
+                                shuffleOptions = shuffleOptions, // v2.19.33：单选/多选打乱选项
+                                preferWrong = preferWrong // v2.19.35：先抽错题本里的题
                             )
                             // v2.10.0：落盘本次组卷配置（快捷方式/小组件「快速模考」直落复用）
                             runCatching {
@@ -599,7 +816,12 @@ fun ExamConfigScreen(
                                     com.drone.quiz.data.settings.ExamQuickConfig(
                                         counts = plannedCounts,
                                         durationMin = durationMin,
-                                        typeOrder = typeOrder.ifEmpty { QuestionTypes.canonicalOrder }
+                                        typeOrder = typeOrder.ifEmpty { QuestionTypes.canonicalOrder },
+                                        // 用户拖滑杆时的原始意图，必须原样存下来：
+                                        // counts 是被题库裁剪过的结果，反推不出占比
+                                        judgeRatio = judgeRatio,
+                                        manualRatios = ratios,
+                                        autoMix = autoMix
                                     )
                                 )
                             }
@@ -607,6 +829,11 @@ fun ExamConfigScreen(
                             ExamSessionHolder.questions = qs
                             ExamSessionHolder.durationSec = durationMin * 60
                             ExamSessionHolder.outcome = null
+                            // v2.19.33：回填本场盐（记录里落库的是同一个），
+                            // 否则本次会话渲染成原序、或与恢复后的顺序对不上
+                            ExamSessionHolder.optSalt =
+                                runCatching { ServiceLocator.repo.examRecord(id)?.optSalt ?: 0L }
+                                    .getOrDefault(0L)
                             onStart(id)
                         }
                     }
@@ -894,6 +1121,33 @@ private fun buildSheetGroups(questions: List<Question>): List<SheetGroup> {
 }
 
 @OptIn(ExperimentalLayoutApi::class)
+/**
+ * 比例归一化的零头分配（v2.19.41）。
+ *
+ * counts 反推比例后四舍五入会掉零头（三个题型各 33% 只剩 99%），
+ * 剩下的 1% 得补给某个题型，否则"手动配比"永远凑不满 100、
+ * 份数会整体偏小。把余量给**当前库内题量最多**的那个题型最不容易显出偏差。
+ */
+private fun fixRatiosRoundOff(
+    ratios: Map<String, Int>,
+    types: List<String>,
+    avail: Map<String, Int>
+): Map<String, Int> {
+    val total = ratios.values.sum()
+    if (total == 100 || total == 0) return ratios
+    val target = types.maxByOrNull { avail[it] ?: 0 } ?: return ratios
+    return ratios.toMutableMap().apply {
+        this[target] = ((this[target] ?: 0) + (100 - total)).coerceAtLeast(0)
+    }
+}
+
+/**
+ * 考试顶栏按钮尺寸（v2.19.38）。
+ * 三个按钮必须同高——原先 46/42/44 三个值各写各的，肉眼可辨的"胖"。
+ */
+private val TOPBAR_BTN = 44.dp
+private val TOPBAR_ICON = 22.dp
+
 @Composable
 fun ExamScreen(
     backdrop: Backdrop,
@@ -903,6 +1157,10 @@ fun ExamScreen(
 ) {
     val ui = LocalUi.current
     val scope = rememberCoroutineScope()
+    // v2.18.0 模考即时判定：开 = 逐题作答当场显示正误；关 = 全卷交后统核（默认）
+    val examSettings by ServiceLocator.settings.settings
+        .collectAsState(initial = com.drone.quiz.data.settings.AppSettings())
+    val instantJudge = examSettings.examInstantJudge
 
     // 会话优先用内存（SessionHolder）；进程重启/从"可继续"进入时从 DB 恢复
     var questions by remember {
@@ -937,6 +1195,7 @@ fun ExamScreen(
                 ExamSessionHolder.questions = qs
                 ExamSessionHolder.durationSec = exam.durationSec
                 ExamSessionHolder.outcome = null
+                ExamSessionHolder.optSalt = exam.optSalt // v2.19.33：恢复后沿用原盐，选项顺序不变
                 questions = qs
                 uas.forEach { (k, v) ->
                     details[k] = v
@@ -1020,24 +1279,31 @@ fun ExamScreen(
                     color = ui.textSub, fontSize = 12.sp
                 )
             }
+            // v2.19.38：三个按钮原本是 46 / 42 / 44 三个不同高度（Grid 用了
+            // GlassIconButton 默认值 46、Close 显式 42、交卷 44）。真机截图逐行量过：
+            // Grid 135px、Close 163px、交卷 128px——Close 明显最"胖"。
+            // 现统一 44.dp；图标 21→22（按钮圆时图标显小是"胖"的另一半原因）。
             GlassIconButton(
                 onClick = { showPanel = true },
                 backdrop = backdrop,
-                icon = AppIcons.Grid
+                icon = AppIcons.Grid,
+                sizeDp = TOPBAR_BTN,
+                iconSize = TOPBAR_ICON
             )
             Spacer(Modifier.width(8.dp))
             GlassIconButton(
                 onClick = { showQuit = true },
                 backdrop = backdrop,
                 icon = AppIcons.Close,
-                sizeDp = 42.dp
+                sizeDp = TOPBAR_BTN,
+                iconSize = TOPBAR_ICON
             )
             Spacer(Modifier.width(8.dp))
             GlassButton(
                 onClick = { showConfirm = true },
                 backdrop = backdrop,
                 surfaceColor = ui.ink,
-                heightDp = 44.dp
+                heightDp = TOPBAR_BTN
             ) {
                 Text("交卷", color = ui.onInk, fontSize = 14.sp, fontWeight = FontWeight.Bold)
             }
@@ -1049,20 +1315,35 @@ fun ExamScreen(
             verticalAlignment = Alignment.Top,
             key = { questions[it].id }
         ) { page ->
-            val q = questions[page]
+            val rawQ = questions[page]
+            // v2.19.33 选项打乱（仅模考）：
+            // perm 把「显示位」映到「原始下标」。UI 只见 display 题、用户在显示空间作答；
+            // onAnswer 里先用 uaToOriginal 换回原始空间再落库/判分。
+            // questions / details / answers 三张表始终存原始空间，判分、错题本、统计零改动。
+            val perm = OptionShuffle.permOf(rawQ, ExamSessionHolder.optSalt)
+            val q = if (perm != null) OptionShuffle.display(rawQ, perm) else rawQ
+            // 已作答状态回显：details 存的是原始下标，转到显示空间才能对上乱序后的高亮位置
+            val uaShown = OptionShuffle.uaToDisplay(details[rawQ.id], rawQ, perm)
             ExamQuestionCard(
                 q = q,
                 index = page + 1,
-                ua = details[q.id],
+                ua = uaShown,
+                hideExplanation = perm != null,
                 backdrop = backdrop,
-                onAnswer = { ua ->
-                    details[q.id] = ua
-                    answers[q.id] = ua.picked
+                // 仅在「已作答」且开了即时判定时才当场亮对错
+                // 多选需显式确认（点选是切换不是作答）；单选/判断点一下即答
+                reveal = instantJudge && isAnswered(q, details[q.id]) &&
+                    (q.type != QuestionTypes.MULTI || details[q.id]?.confirmed == true),
+                onAnswer = { uaShownUp ->
+                    // 换回原始空间——这是数据出视图层的唯一出口
+                    val ua = OptionShuffle.uaToOriginal(uaShownUp, rawQ, perm) ?: uaShownUp
+                    details[rawQ.id] = ua
+                    answers[rawQ.id] = ua.picked
                         ?: if (ua.texts.isNotEmpty() || ua.text.isNotBlank()) 1 else 0
-                    val correct = judgeAnswer(q, ua) ?: false
+                    val correct = judgeAnswer(rawQ, ua) ?: false
                     scope.launch {
                         runCatching {
-                            ServiceLocator.repo.saveExamAnswer(examId, q.id, ua, correct)
+                            ServiceLocator.repo.saveExamAnswer(examId, rawQ.id, ua, correct)
                         }
                     }
                 }
@@ -1294,9 +1575,21 @@ private fun ExamQuestionCard(
     index: Int,
     ua: UserAnswer?,
     backdrop: Backdrop,
+    reveal: Boolean = false,
+    /**
+     * v2.19.33：选项被打乱时为 true，隐藏解析文字。
+     * 打乱后选项顺序已变，而解析里写死了「选C」这类原始字母，两者必然对不上，
+     * 所以只留「判定 + 正确答案」、撤掉解析——即时判定本身不受影响。
+     */
+    hideExplanation: Boolean = false,
     onAnswer: (UserAnswer) -> Unit
 ) {
     val ui = LocalUi.current
+    // v2.18.0 即时判定：仅显示时机变化，judgeAnswer 与交卷判分是同一套口径
+    val verdict: Boolean? = if (reveal) judgeAnswer(q, ua) else null
+    // 本题是否已被判定（= 选项是否锁定）。判据是 verdict，绝不是 ua：
+    // 模考的 ua 是「点一下就写入」的，拿它当锁会误伤"关掉即时判定"的正常改选。
+    val judged = verdict != null
     GlassCard(
         backdrop = backdrop,
         modifier = Modifier
@@ -1332,7 +1625,7 @@ private fun ExamQuestionCard(
             // v2.8.5：题目图片（ZIP 导入的带图题库）——题干后、作答区前，小图点按展开
             QuestionImageStrip(q)
             when (q.type) {
-                QuestionTypes.MULTI -> ExamMultiSection(q, ua, onAnswer)
+                QuestionTypes.MULTI -> ExamMultiSection(q, ua, verdict != null, backdrop, onAnswer)
                 QuestionTypes.BLANK -> ExamBlankSection(q, ua, onAnswer)
                 QuestionTypes.SHORT -> ExamShortSection(q, ua, backdrop, onAnswer)
                 else -> {
@@ -1342,48 +1635,80 @@ private fun ExamQuestionCard(
                             .padding(top = 16.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        // 与模考多选对称的一行状态说明。锁了就得说清楚为什么锁，
+                        // 否则用户会以为是点不动（v2.19.22 用户正是这么反馈的）。
+                        Text(
+                            if (judged) (if (q.isJudge) "判断题 · 已判定，不能再改 —— 下一题继续"
+                                          else "单选题 · 已判定，不能再改 —— 下一题继续")
+                            else (if (q.isJudge) "判断题 · 点一下即为作答" else "单选题 · 点一下即为作答"),
+                            color = ui.textSub, fontSize = 11.sp
+                        )
                         q.optionsOrJudge.forEachIndexed { i, opt ->
-                            val selected = ua?.picked == i
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(if (selected) ui.ink else ui.ink.copy(alpha = 0.05f))
-                                    .clickable(
-                                        interactionSource = null,
-                                        indication = null
-                                    ) { onAnswer(UserAnswer(picked = i)) }
-                                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    Modifier
-                                        .size(24.dp)
-                                        .clip(CircleShape)
-                                        .background(
-                                            if (selected) ui.onInk else ui.ink.copy(alpha = 0.08f)
-                                        ),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        optionLabel(i, q.isJudge),
-                                        color = if (selected) ui.ink else ui.textSub,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
+                            // v2.19.19 修回归：v2.19.18 直接照搬了刷题页的 `ua == null` 判据，
+                            // 但两页的 ua 语义根本不同 ——
+                            //   刷题页 ua 是「提交后才写入的作答」，点一下只是选中；
+                            //   模考页 ua 是「点一下就写入的作答」，即刻非空。
+                            // 于是模考里点完选项 ua 立刻非空，state 立刻变 1/2，
+                            // **把正确答案当场点亮**——即使即时判定是关的。
+                            // 正确判据是 `verdict`（已带 reveal/instantJudge 前置），
+                            // 不是 `ua`。
+                            // v2.19.22 修用户报告的"关掉即时判定后连点选项都点不了"：
+                            // v2.19.19 把判据从 ua 换成 verdict 是对的（否则会当场点亮
+                            // 正确答案），但 state 只有 0/1/2 三态，一关判定 verdict 恒为
+                            // null → state 恒 0 → **选中态被一并抹掉，点下去毫无反应**。
+                            // 现在拆成四态：已判定才显对错，未判定只显"选中了"。
+                            val state = when {
+                                ua == null -> 0
+                                verdict != null -> when {      // 已判定 → 绿/红
+                                    i == q.answer -> 1
+                                    i == ua.picked -> 2
+                                    else -> 0
                                 }
-                                Text(
-                                    opt,
-                                    color = if (selected) ui.onInk else ui.text,
-                                    fontSize = 14.sp,
-                                    lineHeight = 20.sp,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .padding(horizontal = 10.dp)
-                                )
+                                i == ua.picked -> 3            // 已选中，未判定
+                                else -> 0
                             }
+                            // v2.19.18：改用共用 OptionRow —— 此前考试页自己内联画了一整套
+                            // 选项，导致三处不一致：
+                            //   · 判断题的勾叉没走 OptionBadge → v2.19.16/17 自绘的符号在校考页不生效；
+                            //   · 没有答错时的抖动动画与对错配色（刷题页有）；
+                            //   · 选项行高、字号与刷题页不同步。
+                            // 交卷判分口径不变，仍由 submitExam 统一算。
+                            OptionRow(
+                                label = optionLabel(i, q.isJudge),
+                                text = opt,
+                                state = state,
+                                // v2.19.22 修正：能不能改，取决于**这一题判定了没有**，
+                                // 而不是"写了答案没有"。
+                                //   · 即时判定开 → 点一下即判定 → 锁，只能下一题
+                                //     （用户口径：「选了就是选了」，改答案等于改判分依据）
+                                //   · 即时判定关 → verdict 恒 null → 永远可改选
+                                //     （全卷交后统核，本来就该允许反复斟酌）
+                                // 绝不能用 ua 当锁的判据：模考的 ua 是点一下就写入的，
+                                // 拿它当判据会在没开判定时也把选项锁死（v2.19.18 的老坑）。
+                                enabled = !judged,
+                                onClick = { onAnswer(UserAnswer(picked = i)) }
+                            )
                         }
                     }
+                }
+            }
+
+            // ---- 判定结果 + 解析：放在**作答区之后**（v2.19.18）----
+            // 此前这段排在选项**上方**（"先看答案再看题"），与刷题页顺序相反。
+            // 现与刷题页同构：选项 → 判定 → 正确答案 → 解析。
+            // AnimatedVisibility 常驻组合、由 verdict 的空值变化触发入场，
+            // 否则首次出现不会播动画（与刷题页同一处理法）。
+            AnimatedVisibility(
+                visible = verdict != null,
+                enter = expandVertically(tween(260)) + fadeIn(tween(220))
+            ) {
+                Column(Modifier.padding(top = 16.dp)) {
+                    ResultHeader(
+                        verdict,
+                        " · 正确答案：${q.correctAnswerText(brief = true)}"
+                    )
+                    // 打乱生效时不显示解析：解析文字绑定的是原始选项字母
+                    if (!hideExplanation) ParseBlock(q.explanation)
                 }
             }
         }
@@ -1391,31 +1716,72 @@ private fun ExamQuestionCard(
 }
 
 @Composable
-private fun ExamMultiSection(q: Question, ua: UserAnswer?, onAnswer: (UserAnswer) -> Unit) {
+private fun ExamMultiSection(
+    q: Question,
+    ua: UserAnswer?,
+    judged: Boolean,
+    backdrop: Backdrop,
+    onAnswer: (UserAnswer) -> Unit
+) {
     val ui = LocalUi.current
     val pickedMask = ua?.picked ?: 0
+    val answerMask = q.answer
+    val hasPick = pickedMask != 0
     Column(
         Modifier
             .fillMaxWidth()
             .padding(top = 10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Text("多选题 · 可选多项，交卷时全对才算对", color = ui.textSub, fontSize = 11.sp)
+        Text(
+            if (judged) "多选题 · 本题已判定，不再改动"
+            else "多选题 · 可选多项，全对才算对" + if (hasPick) "（选好后点下方确认）" else "",
+            color = ui.textSub, fontSize = 11.sp
+        )
+        // v2.19.23：判定后直接写出"你到底勾了哪几个"，与刷题页同口径。
+        // 漏选/错选现在会逐项标在选项上，但组合答案仍需一行文字才看得清全貌。
+        if (judged) {
+            Text(
+                "你的答案：" + pickedAnswerText(q.options, ua?.picked),
+                color = ui.textSub, fontSize = 12.sp
+            )
+        }
         q.options.forEachIndexed { i, opt ->
             val selected = pickedMask and (1 shl i) != 0
+            val isKey = judged && answerMask and (1 shl i) != 0
+            val pickedRight = judged && selected && isKey
+            val pickedWrong = judged && selected && !isKey
+            // v2.19.23：漏选 —— 该勾没勾。与刷题页 OptionToggleRow 同口径：
+            // 琥珀色、空心勾选框、"漏选"标签；错选则叫"错选"而非"你选的"。
+            val missed = judged && !selected && answerMask and (1 shl i) != 0
             Row(
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
-                    .background(if (selected) ui.ink.copy(alpha = 0.10f) else ui.ink.copy(alpha = 0.05f))
+                    .background(
+                        when {
+                            pickedRight -> ui.correct.copy(alpha = 0.16f)
+                            pickedWrong -> ui.wrong.copy(alpha = 0.16f)
+                            missed -> ui.accent.copy(alpha = 0.12f)
+                            isKey -> ui.correct.copy(alpha = 0.10f)
+                            selected -> ui.ink.copy(alpha = 0.10f)
+                            else -> ui.ink.copy(alpha = 0.05f)
+                        }
+                    )
                     .border(
                         1.dp,
-                        if (selected) ui.ink.copy(alpha = 0.35f) else ui.ink.copy(alpha = 0.08f),
+                        when {
+                            missed -> ui.accent.copy(alpha = 0.55f)
+                            judged && isKey -> ui.correct.copy(alpha = 0.5f)
+                            selected -> ui.ink.copy(alpha = 0.35f)
+                            else -> ui.ink.copy(alpha = 0.08f)
+                        },
                         RoundedCornerShape(16.dp)
                     )
                     .clickable(
                         interactionSource = null,
-                        indication = null
+                        indication = null,
+                        enabled = !judged
                     ) {
                         // 点选切换（位掩码），每次变更即落库；交卷时按位掩码全等判分
                         onAnswer(UserAnswer(picked = pickedMask xor (1 shl i)))
@@ -1427,12 +1793,28 @@ private fun ExamMultiSection(q: Question, ua: UserAnswer?, onAnswer: (UserAnswer
                         .padding(horizontal = 14.dp, vertical = 12.dp)
                         .size(24.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(if (selected) ui.ink else ui.ink.copy(alpha = 0.08f))
-                        .border(1.dp, ui.ink.copy(alpha = 0.12f), RoundedCornerShape(8.dp)),
+                        .background(
+                            when {
+                                pickedRight -> ui.correct
+                                pickedWrong -> ui.wrong
+                                missed -> ui.accent.copy(alpha = 0.18f)   // 空心琥珀
+                                selected -> ui.ink
+                                else -> ui.ink.copy(alpha = 0.08f)
+                            }
+                        )
+                        .border(
+                            1.dp,
+                            if (missed) ui.accent.copy(alpha = 0.55f) else ui.ink.copy(alpha = 0.12f),
+                            RoundedCornerShape(8.dp)
+                        ),
                     contentAlignment = Alignment.Center
                 ) {
                     if (selected) {
-                        Icon(AppIcons.Check, null, tint = ui.onInk, modifier = Modifier.size(14.dp))
+                        Icon(
+                            AppIcons.Check, null,
+                            tint = if (judged) Color.White else ui.onInk,
+                            modifier = Modifier.size(14.dp)
+                        )
                     }
                 }
                 Text(
@@ -1444,6 +1826,35 @@ private fun ExamMultiSection(q: Question, ua: UserAnswer?, onAnswer: (UserAnswer
                         .weight(1f)
                         .padding(end = 14.dp, top = 12.dp, bottom = 12.dp)
                 )
+                if (pickedRight || pickedWrong || missed) {
+                    Text(
+                        when {
+                            pickedRight -> "正确"
+                            pickedWrong -> "错选"
+                            else -> "漏选"
+                        },
+                        color = when {
+                            pickedRight -> ui.correct
+                            pickedWrong -> ui.wrong
+                            else -> ui.accent
+                        },
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+        // 即时判定：多选点选没有天然的提交时刻，给一个显式确认按钮
+        if (!judged && hasPick) {
+            GlassButton(
+                onClick = { onAnswer((ua ?: UserAnswer()).copy(confirmed = true)) },
+                backdrop = backdrop,
+                surfaceColor = ui.ink,
+                heightDp = 44.dp,
+                modifier = Modifier.fillMaxWidth().padding(top = 2.dp)
+            ) {
+                Icon(AppIcons.Check, null, tint = ui.onInk, modifier = Modifier.size(16.dp))
+                Text("确认本题", color = ui.onInk, fontSize = 14.sp, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -1483,7 +1894,7 @@ private fun ExamShortSection(
     var draft by remember(q.id, submitted) { mutableStateOf("") }
     Column(Modifier.padding(top = 14.dp)) {
         com.drone.quiz.screens.common.ShortDraftField(
-            value = if (submitted) ua!!.text else draft,
+            value = if (submitted) ua?.text.orEmpty() else draft,
             onValueChange = { draft = it },
             enabled = !submitted
         )
@@ -1498,9 +1909,11 @@ private fun ExamShortSection(
         } else {
             com.drone.quiz.screens.common.ShortReferenceCard(
                 reference = q.answerText,
-                yourText = ua!!.text,
+                yourText = ua?.text.orEmpty(),
                 graded = ua.graded,
                 selfCorrect = if (ua.graded) ua.picked == 1 else null,
+                referenceImages = q.explanationImages,
+                bankId = q.bankId,
                 onGrade = { correct ->
                     onAnswer(ua.copy(picked = if (correct) 1 else 0, graded = true))
                 }

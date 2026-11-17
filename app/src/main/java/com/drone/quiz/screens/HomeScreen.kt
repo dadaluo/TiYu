@@ -48,6 +48,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.sp
 import com.drone.quiz.ServiceLocator
 import com.drone.quiz.data.repo.Repo
@@ -72,6 +73,10 @@ import androidx.compose.foundation.border
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import androidx.compose.animation.core.animateDpAsState
+
+import androidx.compose.foundation.layout.offset
+
 
 @Composable
 fun HomeScreen(
@@ -93,8 +98,11 @@ fun HomeScreen(
         val accuracy: Float = 0f,
         val streak: Int = 0,
         val days: List<Repo.DayStat> = emptyList(),
+        val exams: List<com.drone.quiz.data.db.ExamRecordEntity> = emptyList(),
         val todayAnswered: Int = 0,
         val todayCorrect: Int = 0,
+        // 打卡热力图：近 154 天「日期 / 当日题量 / 当日答对」，全局数据（不按题库隔离）
+        val heat: List<com.drone.quiz.data.repo.Repo.HeatDay> = emptyList(),
         val lastExam: com.drone.quiz.data.db.ExamRecordEntity? = null
     )
 
@@ -107,14 +115,15 @@ fun HomeScreen(
             ServiceLocator.repo.answeredDistinctFlow(bank),
             ServiceLocator.repo.totalAnsweredFlow(),
             ServiceLocator.repo.activeWrong(bank).map { it.size },
-            ServiceLocator.repo.recentExams(bank)
+            ServiceLocator.repo.recentScoredExams(bank, 8)
         ) { total, distinct, answered, wrong, exams ->
             HomeStats(
                 total = total,
                 answeredDistinct = distinct,
                 totalAnswered = answered,
                 wrongCount = wrong,
-                lastExam = exams.firstOrNull()
+                lastExam = exams.firstOrNull(),
+                exams = exams
             )
         }.collect { s0 ->
             val acc = ServiceLocator.repo.accuracy(bank)
@@ -128,16 +137,43 @@ fun HomeScreen(
                 streak = streak,
                 days = days,
                 todayAnswered = todayAns,
-                todayCorrect = todayCor
+                todayCorrect = todayCor,
+                heat = runCatching { ServiceLocator.repo.heatmapDays(160) }
+                    .getOrElse { emptyList() }
             )
         }
     }
 
     val coverage = if (stats.total > 0) stats.answeredDistinct.toFloat() / stats.total else 0f
-    // 预估通过率：参考设置中的及格线 —— 正确率相对及格分的达标程度为主，覆盖率加权
-    // （此前固定阈值不随及格分变化，用户改及格分后无反馈）
-    val passRatio = (stats.accuracy / (settings.passScore.coerceAtLeast(1) / 100f)).coerceIn(0f, 1f)
-    val estimate = (passRatio * 0.7f + coverage * 0.3f).coerceIn(0f, 1f)
+
+    // 预估通过率（v2.19.48 重写，见 data/PassEstimate.kt）。
+    //
+    // 旧式只有一行：累计刷题正确率 ÷ 及格分，再和「刷题覆盖率」三七分。
+    // 五个问题都在那里：压根没引用模考成绩、每题一票不分卷子大小、
+    // 不分题型（把判断题占比调高去刷分会跟着涨）、没有时间衰减，
+    // 以及「刷了多少题」占 30% 权重——练得多不等于练得好。
+    //
+    // 现在：模考为主（按题数累积 + 时间衰减）、题型按题库真实配比校正、
+    // 样本少时向先验收缩、刷题按**去重题数**折权作辅助。
+    val estBank = settings.currentBank
+    var passResult by remember(estBank, settings.passScore) {
+        mutableStateOf<com.drone.quiz.data.PassEstimate.Result?>(null)
+    }
+    LaunchedEffect(estBank, settings.passScore) {
+        passResult = runCatching {
+            val inp = ServiceLocator.repo.passInputs(estBank)
+            com.drone.quiz.data.PassEstimate.compute(
+                exams = inp.exams,
+                bankTypeMix = inp.bankTypeMix,
+                passLine = settings.passScore,
+                practiceAcc = inp.practiceAcc,
+                practiceN = inp.practiceDistinct,
+                coverage = inp.coverage,
+                now = System.currentTimeMillis()
+            )
+        }.getOrNull()
+    }
+    val estimate = (passResult?.estimate ?: 0f).coerceIn(0f, 1f)
 
     // 打卡里程碑：3/7/14/21/30/50/100 天逐级递进
     val milestone = listOf(3, 7, 14, 21, 30, 50, 100).firstOrNull { it > stats.streak } ?: (stats.streak + 10)
@@ -281,159 +317,150 @@ fun HomeScreen(
                                 fontWeight = FontWeight.Bold
                             )
                         }
-                    }
-                }
-            }
-        }
-
-        // ---- 打卡双卡（连击里程碑 + 今日；IntrinsicSize 等高 + 完全同构排版） ----
-        // v2.7.1 统一：两卡同为"图标+标签 / 大数字 / 副行 / 进度条 / 底注"五行结构，
-        // 字号、间距、条高逐行对齐，仅图标与条色按语义区分（用户反馈排版凌乱）
-        item {
-            Row(
-                Modifier
-                    .padding(horizontal = 20.dp, vertical = 12.dp)
-                    .fillMaxWidth()
-                    .height(IntrinsicSize.Min),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                GlassCard(
-                    backdrop = backdrop,
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(),
-                    cornerRadius = 22.dp
-                ) {
-                    Column(Modifier.padding(16.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                AppIcons.Flame,
-                                null,
-                                tint = ui.accent,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Text(
-                                "连击",
-                                color = ui.textSub,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(start = 5.dp)
-                            )
-                        }
-                        Text(
-                            "${stats.streak} 天",
-                            color = ui.text,
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(top = 8.dp)
-                        )
-                        Text(
-                            streakHint,
-                            color = ui.textSub, fontSize = 11.sp,
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
-                        Spacer(Modifier.weight(1f))
-                        // 距下一里程碑进度条（与今日卡同高同位）
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .height(5.dp)
-                                .clip(RoundedCornerShape(50))
-                                .background(ui.ink.copy(alpha = 0.1f))
-                        ) {
-                            val p = (stats.streak.toFloat() / milestone).coerceIn(0f, 1f)
-                            Box(
-                                Modifier
-                                    .fillMaxWidth(p)
-                                    .height(5.dp)
-                                    .clip(RoundedCornerShape(50))
-                                    .background(
-                                        Brush.horizontalGradient(
-                                            listOf(ui.accent, ui.accent.copy(alpha = 0.7f))
-                                        )
-                                    )
-                            )
-                        }
-                        Text(
-                            "再练 ${milestone - stats.streak} 天达成 $milestone 天连击",
-                            color = ui.textSub, fontSize = 10.sp,
-                            modifier = Modifier.padding(top = 5.dp)
-                        )
-                    }
-                }
-                GlassCard(
-                    backdrop = backdrop,
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(),
-                    cornerRadius = 22.dp
-                ) {
-                    Column(Modifier.padding(16.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                AppIcons.Check,
-                                null,
-                                tint = ui.correct,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Text(
-                                "今日",
-                                color = ui.textSub,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(start = 5.dp)
-                            )
-                        }
-                        Text(
-                            "${stats.todayAnswered} 题",
-                            color = ui.text,
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(top = 8.dp)
-                        )
-                        val accToday = if (stats.todayAnswered > 0) {
-                            (stats.todayCorrect * 100) / stats.todayAnswered
-                        } else 0
-                        Text(
-                            "正确 $accToday%",
-                            color = ui.textSub, fontSize = 11.sp,
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
-                        Spacer(Modifier.weight(1f))
-                        // 对错占比条（与连击卡同高同位）
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .height(5.dp)
-                                .clip(RoundedCornerShape(50))
-                                .background(ui.ink.copy(alpha = 0.08f))
-                        ) {
-                            val done = stats.todayAnswered.coerceAtLeast(1)
-                            val goodRatio = (stats.todayCorrect.toFloat() / done).coerceIn(0f, 1f)
-                            if (stats.todayAnswered > 0) {
-                                Box(
-                                    Modifier
-                                        .fillMaxWidth(goodRatio)
-                                        .fillMaxHeight()
-                                        .clip(RoundedCornerShape(50))
-                                        .background(ui.correct)
+                        // v2.19.48：把估计的**依据**摊开。
+                        // 一个凭空而来的百分数最容易被误解成「定论」，
+                        // 而题数少的时候它本来就只是参考——写清楚来源与
+                        // 样本量，用户才知道该信几分、什么时候会变。
+                        passResult?.let { r ->
+                            if (!r.coldStart) {
+                                Text(
+                                    r.basis(settings.passScore),
+                                    color = ui.textSub.copy(alpha = 0.85f),
+                                    fontSize = 10.5.sp,
+                                    lineHeight = 14.sp,
+                                    modifier = Modifier.padding(top = 5.dp)
                                 )
                             }
                         }
-                        Text(
-                            if (stats.todayAnswered > 0)
-                                "答对 ${stats.todayCorrect} · 答错 ${stats.todayAnswered - stats.todayCorrect}"
-                            else "今天还没开始，来几题热热手",
-                            color = ui.textSub, fontSize = 10.sp,
-                            modifier = Modifier.padding(top = 5.dp)
-                        )
                     }
                 }
             }
         }
 
-        // ---- 近 7 天图表 ----
+        // ---- 打卡单卡：连击 + 今日 + 13 周热力图 ----
+        // v2.19.7 重构：原先「连击卡 + 今日卡」并排两半，热力图塞不进半屏宽度，
+        // 故合并为一张全宽卡 —— 顶行两个数字，中部热力图，底行脚注。
+        // 同时按用户裁定去掉了里程碑进度条（那是倒计时桩，热力图已接管
+        // 「我这阵子状态如何」这件事），只保留脚注文字。
         item {
+            GlassCard(
+                backdrop = backdrop,
+                modifier = Modifier
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
+                    .fillMaxWidth(),
+                cornerRadius = 22.dp
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    // ---- 顶行：连击（左） / 今日（右）----
+                    // v2.19.10 信息重排。此前用户反馈"今日四十题，百分之七十"未明何意、
+                    // "答对二十八·答错十二"亦未解其义：70% 悬着没有标签，答对/答错也没说
+                    // 是哪一天的；而这三条其实是同一份数据（28+12=40，28/40=70%），
+                    // 摆两遍还都不说清，反而添乱。
+                    // 现改为左右**三行同构**：各「一行小标签 + 一行大数字 + 一行注解」，
+                    // 注解自带单位与主语（"再练 4 天…"挂在连击下，"正确率 70%"挂在今日下），
+                    // 底部脚注只留一句带主语的"今日答对…"，图例挪到同一行右侧。
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    AppIcons.Flame, null, tint = ui.accent,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    "连击",
+                                    color = ui.textSub, fontSize = 11.sp,
+                                    modifier = Modifier.padding(start = 4.dp)
+                                )
+                            }
+                            Text(
+                                "${stats.streak} 天",
+                                color = ui.text, fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                            Text(
+                                if (stats.streak < milestone) {
+                                    "再练 ${milestone - stats.streak} 天达成 $milestone 天"
+                                } else {
+                                    streakHint
+                                },
+                                color = ui.textSub, fontSize = 10.sp,
+                                maxLines = 1,
+                                modifier = Modifier.padding(top = 3.dp)
+                            )
+                        }
+                        Column(Modifier.weight(1f), horizontalAlignment = Alignment.End) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "今日",
+                                    color = ui.textSub, fontSize = 11.sp,
+                                    modifier = Modifier.padding(end = 4.dp)
+                                )
+                                Icon(
+                                    AppIcons.Check, null, tint = ui.correct,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                            Text(
+                                "${stats.todayAnswered} 题",
+                                color = ui.text, fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                            // 主语 + 单位都写全：0 题时不显示（0 题不存在正确率）
+                            Text(
+                                if (stats.todayAnswered > 0) {
+                                    "正确率 ${(stats.todayCorrect * 100) / stats.todayAnswered}%"
+                                } else {
+                                    "还没开始"
+                                },
+                                color = if (stats.todayAnswered > 0) ui.correct else ui.textSub,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                modifier = Modifier.padding(top = 3.dp)
+                            )
+                        }
+                    }
+
+                    // ---- 18 周热力图（全局打卡数据，与连击同源）----
+                    StreakHeatmap(
+                        days = stats.heat,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp)
+                    )
+
+                    // ---- 脚注：主语写全的答对/答错 + 图例同处一行 ----
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            if (stats.todayAnswered > 0) {
+                                "今日答对 ${stats.todayCorrect} · 答错 ${stats.todayAnswered - stats.todayCorrect}"
+                            } else {
+                                "今天还没开始，来几题热热手"
+                            },
+                            color = ui.textSub, fontSize = 10.sp,
+                            maxLines = 1,
+                            modifier = Modifier.weight(1f)
+                        )
+                        StreakHeatmapLegend()
+                    }
+                }
+            }
+        }
+
+        // ---- 图表卡：近 7 天练习 ↔ 模考走势（v2.19.50 可切换，共用同一张图）----
+        item {
+            var examMode by remember(settings.currentBank) { mutableStateOf(false) }
             GlassCard(
                 backdrop = backdrop,
                 modifier = Modifier
@@ -444,30 +471,36 @@ fun HomeScreen(
                 Column(Modifier.padding(18.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            "近 7 天练习",
+                            if (examMode) "模考走势" else "近 7 天练习",
                             color = ui.text,
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.weight(1f)
                         )
-                        // 范围标记（v2.8.2：今日/近 7 天已按题库隔离，与全局打卡区分）
-                        Text(
-                            "本题库",
-                            color = ui.textSub, fontSize = 10.sp,
-                            modifier = Modifier
-                                .padding(end = 10.dp)
-                                .clip(RoundedCornerShape(50))
-                                .background(ui.ink.copy(alpha = 0.06f))
-                                .padding(horizontal = 8.dp, vertical = 3.dp)
+                        // v2.19.53：切换按钮挪到标题行右侧。
+                        // 原先它独占一整行（下面那个 132dp 的分段开关），
+                        // 而这卡横向宽度本来就吃紧——用户明确要求收成一个按钮。
+                        ChartModeSwitch(
+                            examMode = examMode,
+                            onChange = { examMode = it }
                         )
-                        // 图例
+                    }
+                    // v2.19.53：图例让位给切换按钮，下移一行。
+                    // 图例：柱的含义随模式切换（题量 / 得分），折线始终是正确率
+                    Row(
+                        Modifier.padding(top = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Box(
                             Modifier
                                 .size(8.dp)
                                 .clip(RoundedCornerShape(2.dp))
                                 .background(ui.ink)
                         )
-                        Text(" 题量  ", color = ui.textSub, fontSize = 11.sp)
+                        Text(
+                            if (examMode) " 得分  " else " 题量  ",
+                            color = ui.textSub, fontSize = 11.sp
+                        )
                         Box(
                             Modifier
                                 .size(8.dp)
@@ -476,17 +509,32 @@ fun HomeScreen(
                         )
                         Text(" 正确率", color = ui.textSub, fontSize = 11.sp)
                     }
-                    WeekChart(
-                        days = stats.days,
-                        barColor = ui.ink,
-                        lineColor = ui.accent,
-                        trackColor = ui.ink.copy(alpha = 0.08f),
-                        textColor = ui.textSub,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 14.dp)
-                            .height(140.dp)
-                    )
+
+                    val examPoints = stats.exams.toExamChartPoints()
+                    val points = if (examMode) examPoints else stats.days.toChartPoints()
+                    if (points.isEmpty()) {
+                        Text(
+                            if (examMode) "还没有模考记录，考一场就能看到走势" else "近 7 天还没有练习记录",
+                            color = ui.textSub, fontSize = 12.sp,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 14.dp)
+                                .height(140.dp),
+                            textAlign = TextAlign.Center
+                        )
+                    } else {
+                        Chart(
+                            points = points,
+                            barColor = ui.ink,
+                            lineColor = ui.accent,
+                            trackColor = ui.ink.copy(alpha = 0.08f),
+                            textColor = ui.textSub,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp)
+                                .height(140.dp)
+                        )
+                    }
                 }
             }
         }
@@ -677,11 +725,62 @@ fun ProgressRing(
 }
 
 /**
- * 近 7 天柱状图 + 正确率折线（Canvas 自绘）。
+ * 图表的一个数据点（v2.19.50 泛化）。
+ *
+ * 原先 [WeekChart] 只吃 [Repo.DayStat]，于是「近 7 天练习」和
+ * 「模考走势」得各画一份。这里把两种来源都归一成同一种形状，
+ * 底下的绘制逻辑一行都不用改——用户要的正是"不创作新图表，直接切换"。
+ */
+data class ChartPoint(
+    val label: String,      // X 轴标签
+    val bar: Float,         // 柱状值（题量 / 得分）
+    val line: Float,        // 折线值，0..1（正确率）
+    val barZero: Boolean = false,   // 柱为 0 → 淡显
+    val emphasize: Boolean = false   // 高亮（今天 / 最近一次）
+)
+
+/** 近 7 天练习 → 图表数据点 */
+fun List<Repo.DayStat>.toChartPoints(): List<ChartPoint> = map {
+    ChartPoint(
+        label = it.label,
+        bar = it.answered.toFloat(),
+        line = if (it.answered > 0) it.correct.toFloat() / it.answered else 0f,
+        barZero = it.answered == 0,
+        emphasize = it.isToday
+    )
+}
+
+/** 最近若干次模考 → 图表数据点（时间正序，越靠右越新） */
+fun List<com.drone.quiz.data.db.ExamRecordEntity>.toExamChartPoints(): List<ChartPoint> =
+    asReversed().filter { it.score != null }.map { e ->
+        val sc = e.score!!
+        ChartPoint(
+            label = shortDate(e.startedAt),
+            // 得分与正确率同向（分数就是按正确率算的），柱与线不会互相打架
+            bar = sc,
+            line = (sc / 100f).coerceIn(0f, 1f),
+            barZero = sc <= 0f,
+            emphasize = false
+        )
+    }
+
+/** MM/DD（同年不写年） */
+private fun shortDate(ts: Long): String {
+    val c = java.util.Calendar.getInstance().apply { timeInMillis = ts }
+    val m = c.get(java.util.Calendar.MONTH) + 1
+    val d = c.get(java.util.Calendar.DAY_OF_MONTH)
+    val y = c.get(java.util.Calendar.YEAR)
+    val now = java.util.Calendar.getInstance()
+    return if (y == now.get(java.util.Calendar.YEAR)) "$m/$d" else "$y/$m"
+}
+
+/**
+ * 柱状图 + 折线（Canvas 自绘）。
+ * 两种模式共用：**近 7 天练习**（柱=题量）与**模考走势**（柱=得分）。
  */
 @Composable
-fun WeekChart(
-    days: List<Repo.DayStat>,
+fun Chart(
+    points: List<ChartPoint>,
     barColor: Color,
     lineColor: Color,
     trackColor: Color,
@@ -691,21 +790,21 @@ fun WeekChart(
     val density = LocalDensity.current
     val labelPx = with(density) { 10.sp.toPx() }
     Canvas(modifier) {
-        if (days.isEmpty()) return@Canvas
-        val n = days.size
+        if (points.isEmpty()) return@Canvas
+        val n = points.size
         val labelSpace = labelPx * 2.2f
         val chartH = size.height - labelSpace
         val slot = size.width / n
         val barW = slot * 0.42f
-        val maxV = (days.maxOf { it.answered }).coerceAtLeast(10).toFloat()
+        val maxV = points.maxOf { it.bar }.coerceAtLeast(10f)
 
         // 柱
-        days.forEachIndexed { i, d ->
-            val h = chartH * 0.82f * (d.answered / maxV)
+        points.forEachIndexed { i, d ->
+            val h = chartH * 0.82f * (d.bar / maxV)
             val left = slot * i + (slot - barW) / 2
             val top = chartH - h
             drawRoundRect(
-                color = if (d.isToday) barColor else barColor.copy(alpha = if (d.answered == 0) 0.12f else 0.32f),
+                color = if (d.emphasize) barColor else barColor.copy(alpha = if (d.barZero) 0.12f else 0.32f),
                 topLeft = Offset(left, top),
                 size = Size(barW, h.coerceAtLeast(3f)),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(barW / 2)
@@ -713,23 +812,22 @@ fun WeekChart(
         }
 
         // 正确率折线
-        val points = days.mapIndexed { i, d ->
-            val acc = if (d.answered > 0) d.correct.toFloat() / d.answered else 0f
-            Offset(slot * i + slot / 2, chartH - chartH * 0.82f * acc - chartH * 0.02f)
+        val linePts = points.mapIndexed { i, d ->
+            Offset(slot * i + slot / 2, chartH - chartH * 0.82f * d.line - chartH * 0.02f)
         }
-        if (days.any { it.answered > 0 }) {
+        if (points.any { !it.barZero }) {
             val path = androidx.compose.ui.graphics.Path().apply {
-                points.forEachIndexed { i, p ->
+                linePts.forEachIndexed { i, p ->
                     if (i == 0) moveTo(p.x, p.y) else cubicTo(
-                        (points[i - 1].x + p.x) / 2, points[i - 1].y,
-                        (points[i - 1].x + p.x) / 2, p.y,
+                        (linePts[i - 1].x + p.x) / 2, linePts[i - 1].y,
+                        (linePts[i - 1].x + p.x) / 2, p.y,
                         p.x, p.y
                     )
                 }
             }
             drawPath(path, lineColor, style = Stroke(2.5.dp.toPx(), cap = StrokeCap.Round))
-            points.forEachIndexed { i, p ->
-                if (days[i].answered > 0) {
+            linePts.forEachIndexed { i, p ->
+                if (!points[i].barZero) {
                     drawCircle(lineColor, 3.5f, p)
                     drawCircle(Color.White, 1.5f, p)
                 }
@@ -748,7 +846,7 @@ fun WeekChart(
             textAlign = android.graphics.Paint.Align.CENTER
             isAntiAlias = true
         }
-        days.forEachIndexed { i, d ->
+        points.forEachIndexed { i, d ->
             drawContext.canvas.nativeCanvas.drawText(
                 d.label,
                 slot * i + slot / 2,
@@ -756,6 +854,51 @@ fun WeekChart(
                 textPaint
             )
         }
+    }
+}
+
+/**
+ * 图表模式切换（v2.19.50）：练习 / 模考。
+ *
+ * 用紧凑的滑动胶囊而不是 [SegmentedRow]——后者 fillMaxWidth，
+ * 放进卡片标题行会显得头重脚轻，这里只需要占标题宽度的一半。
+ */
+@Composable
+private fun ChartModeSwitch(
+    examMode: Boolean,
+    onChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val ui = LocalUi.current
+    // v2.19.53：从「两段滑动开关」改成**单个按钮，点一下翻到另一个**。
+    // 用户口径：两个并排的分段开关要占 132dp，这卡的横向宽度不够，
+    // 挤到图例甚至挤到标题。所以只留一个按钮，显示当前模式，
+    // 点一下在「练习 ⇄ 模考」之间来回切。
+    val label = if (examMode) "模考" else "练习"
+    Row(
+        modifier
+            .clip(RoundedCornerShape(50))
+            .background(ui.ink)
+            .clickable(
+                interactionSource = null,
+                indication = null
+            ) { onChange(!examMode) }
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            if (examMode) AppIcons.Timer else AppIcons.Cards,
+            null,
+            tint = ui.onInk,
+            modifier = Modifier.size(13.dp)
+        )
+        Spacer(Modifier.width(5.dp))
+        Text(
+            label,
+            color = ui.onInk,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold
+        )
     }
 }
 

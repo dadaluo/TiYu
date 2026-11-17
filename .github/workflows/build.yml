@@ -12,8 +12,12 @@ permissions:
   contents: write
 
 env:
-  APP_VERSION_NAME: 2.17.0
-  APP_VERSION_TAG: v2.17.0
+  # IS_PREVIEW=true 时走**草稿预览**通道：APK 内部版本号带 -preview 后缀、
+  # versionCode 抬高可覆盖安装线上正式版、Release 以 draft 发布（仓库里可见可下载，
+  # 但不对外公开）。验证通过后把 IS_PREVIEW 改回 false、版本号去掉后缀即可正式发。
+  IS_PREVIEW: 'false'
+  APP_VERSION_NAME: 2.19.54
+  APP_VERSION_TAG: v2.19.54
 
 jobs:
   build:
@@ -21,6 +25,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # v2.19.36：生成历程数据需要完整历史（默认 fetch-depth:1 只有最后一个提交，
+          # 会让 AppHistory 只剩当前版本一条）。已足够浅，又不拖慢构建。
+          fetch-depth: 0
+
+      - name: Regenerate app history
+        # v2.19.36：历程表改为每次发版自动重生成，不再靠人记得手跑脚本。
+        # 脚本幂等——git 历史没变时输出与仓库内文件一致，重生成不会产生噪声 diff。
+        # 真正被更新的 AppHistory.kt 会随 tag 提交记录在案。
+        run: |
+          python3 scripts/gen_history.py
+          python3 scripts/static_check.py
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -38,20 +54,23 @@ jobs:
           echo "DQ_KS_PATH=$RUNNER_TEMP/dronequiz.keystore" >> "$GITHUB_ENV"
           echo "DQ_KS_STORE_PASS=${{ secrets.DQ_KS_STORE_PASS }}" >> "$GITHUB_ENV"
 
-      # v2.16.0 起含 native 构建（externalNativeBuild/cmake，libdroneocr.so）：
-      # 显式装齐 ndkVersion 27.2.12479018 + cmake 3.22.1，不依赖 AGP 在线自动安装
-      - name: Install NDK & CMake
-        run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;27.2.12479018" "cmake;3.22.1" > /dev/null
+      # v2.17.0 起工程已无任何 native 代码（拍照搜题/OCR 整体下线，jniLibs 与 cpp/ 一并移除），
+      # 构建不再需要 NDK / CMake，这条安装步骤同步删除。
 
       - name: Build release APK
-        run: ./gradlew assembleRelease --stacktrace --no-daemon
+        run: ./gradlew testDebugUnitTest assembleRelease --stacktrace --no-daemon ${{ env.IS_PREVIEW == 'true' && '-PtiyuPreview=true' || '' }}
 
       - name: Rename APK
         run: |
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk dist/TiYu-${{ env.APP_VERSION_NAME }}.apk
+          # v2.19.41：再存一份**不带版本号**的固定名资产。
+          # releases/latest/download/ 只认固定名——有了它，产品页和任何外部
+          # 直链都能写死 TiYu-latest.apk，不必跟着版本号改。
+          # 仅正式版更新它：preview/draft 不该抢"最新"这个位置。
+          if [ "${{ env.IS_PREVIEW }}" != "true" ]; then
+            cp app/build/outputs/apk/release/app-release.apk dist/TiYu-latest.apk
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -64,20 +83,19 @@ jobs:
         with:
           tag_name: ${{ env.APP_VERSION_TAG }}
           name: 题屿 TiYu ${{ env.APP_VERSION_TAG }}
-          files: dist/TiYu-${{ env.APP_VERSION_NAME }}.apk
+          # 预览通道：draft = 仓库内可见可下载，但不会对外公开
+          draft: ${{ env.IS_PREVIEW == 'true' }}
+          prerelease: ${{ env.IS_PREVIEW == 'true' }}
+          files: |
+            dist/TiYu-${{ env.APP_VERSION_NAME }}.apk
+            dist/TiYu-latest.apk
           body: |
-            ## 题屿 TiYu v2.17.0
+            ## 题屿 TiYu v2.19.54
 
-            ### 新功能 —— 解析支持 Markdown 排版
+            - 同步上游 v2.19.53：模考组卷、选项打乱、设置记忆、错题优先和优先未答。
+            - 学习热力图、通过率估计、首页练习/模考图表切换及解析插图。
+            - 保留本分支 Markdown 解析、阅读字体和升级后的构建工具链。
+            - 按上游移除拍照搜题与 OCR，安装包不再包含相关模型和 native 库。
+            - 下载和应用检查更新继续使用 dadaluo/TiYu。
 
-            - 刷题、搜索结果和错题回顾的解析区统一支持 Markdown，
-              标题、列表、引用等长文结构更清晰，并沿用当前阅读字体和主题色。
-            - 升级 AGP 9.1.1、Gradle 9.7.1、Kotlin 2.4.20、Compose BOM 2026.09.00
-              以及 AndroidX / kotlinx 依赖，compileSdk 升至 37。
-            - 已同步上游 v2.16.0：PaddleOCR + MNN 拍照搜题、模型按需下载、
-              CameraX 和 AlarmManager 提醒链路全部保留。
-            - 项目发布与检查更新链路迁移至 `dadaluo/TiYu`。
-
-            ---
-
-            **安装**：下载下方 `TiYu-2.17.0.apk` 安装覆盖即可，数据无需迁移。
+            下载 `TiYu-2.19.54.apk` 安装，学习数据自动迁移。

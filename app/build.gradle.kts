@@ -15,12 +15,11 @@ android {
         applicationId = "com.drone.quiz"
         minSdk = 31
         targetSdk = 35
-        versionCode = 54
-        versionName = "2.17.0"
-        // v2.12.1：只留 ARM 双架构（模拟器 x86 系无真机价值）；
-        // v2.16.0：ML Kit bundled 移除后，native 库仅剩 jniLibs 里的 MNN 推理库
+        versionCode = if (providers.gradleProperty("tiyuPreview").orNull == "true") 111 else 110
+        versionName = if (providers.gradleProperty("tiyuPreview").orNull == "true")
+            "2.19.54-preview" else "2.19.54"
+        // 仅打包 ARM 双架构，沿用现有真机支持范围。
         ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
-        ndkVersion = "27.2.12479018"
     }
 
     // 固定签名：本地（环境变量 DQ_KS_PATH/DQ_KS_STORE_PASS）与 GitHub Actions（secrets）共用同一 keystore，
@@ -62,14 +61,11 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+}
 
-    // v2.16.0 拍照搜题 OCR：MNN 推理薄封装（预/后处理在 Kotlin），
-    // 模型文件不随 APK 分发，首次使用时按需下载（OcrModels）
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
+kotlin {
+    compilerOptions {
+        freeCompilerArgs.add("-Xcontext-parameters")
     }
 }
 
@@ -104,16 +100,9 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
-    // v2.16.0：ML Kit text-recognition-chinese bundled（约 18MB：双 ABI 引擎库+内置模型）
-    // 与 gms Task 桥接库一并移除——OCR 换 PaddleOCR PP-OCRv4 + MNN（模型首用按需下载），
-    // APK 从 60.9MB 减至约 44MB。详见 ocr/OcrModels.kt 与 static_check 3.14 节
-    // 拍照 EXIF 方向读取
-    implementation("androidx.exifinterface:exifinterface:1.3.7")
-    // v2.13.0 拍照搜题自建相机页：CameraX 取景框引导（比系统相机随手拍识别率显著更高）
-    implementation("androidx.camera:camera-core:1.4.2")
-    implementation("androidx.camera:camera-camera2:1.4.2")
-    implementation("androidx.camera:camera-lifecycle:1.4.2")
-    implementation("androidx.camera:camera-view:1.4.2")
+    // 上游 v2.17.0 已移除拍照搜题及 OCR / CameraX / native 依赖。
+
+    testImplementation("junit:junit:4.13.2")
 
     implementation("com.mikepenz:multiplatform-markdown-renderer:0.45.0")
     implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.45.0")

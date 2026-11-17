@@ -53,6 +53,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -87,7 +88,11 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 @Composable
-fun SettingsScreen(backdrop: Backdrop) {
+fun SettingsScreen(
+    backdrop: Backdrop,
+    // v2.19.34：历程是独立路由，导航权在 AppRoot，设置页只管"喊一声"
+    onOpenHistory: () -> Unit = {}
+) {
     val ui = LocalUi.current
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -421,14 +426,26 @@ fun SettingsScreen(backdrop: Backdrop) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
-                        Text("底栏玻璃模糊", color = ui.text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        Text("底栏模糊", color = ui.text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                         Text(
-                            listOf("轻透", "适中", "朦胧").getOrElse(settings.glassBlur) { "适中" },
-                            color = ui.textSub, fontSize = 12.sp
+                            // 亚克力维持原三档描述；液态玻璃多一档"纯玻璃"
+                            if (settings.effects) {
+                                listOf("纯玻璃 · 不模糊", "轻微模糊", "明显模糊")
+                                    .getOrElse(settings.glassBlur) { "轻微模糊" }
+                            } else {
+                                listOf("轻度模糊", "中度模糊", "高度模糊")
+                                    .getOrElse(settings.glassBlur) { "中度模糊" }
+                            },
+                            color = ui.textSub, fontSize = 12.sp,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis
                         )
                     }
                     SegmentedRow(
-                        options = listOf("低", "中", "高"),
+                        // 档位名按画面特效切换（v2.19.20）：
+                        // 亚克力仍是低/中/高；液态玻璃是 关/轻/重 —— 用户明确不要
+                        // "低/中"这种直白写法，改用描述模糊轻重的单字。
+                        options = if (settings.effects) listOf("关", "轻", "重")
+                                  else listOf("低", "中", "高"),
                         selectedIndex = settings.glassBlur,
                         onSelect = { scope.launch { ServiceLocator.settings.setGlassBlur(it) } },
                         modifier = Modifier.width(150.dp)
@@ -619,6 +636,12 @@ fun SettingsScreen(backdrop: Backdrop) {
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // v2.19.21：回到最直接的做法——点一下直接开系统相册选择器。
+                    // v2.19.20 曾加过「更换壁纸」二级面板（相册 / 同步系统壁纸），
+                    // 用户反馈不需要，已整体撤回：多一次点击，且「同步系统壁纸」
+                    // 在 Android 13+ 要「所有文件访问权限」，为一个可有可无的功能
+                    // 要这种敏感权限不划算。同步那套实现留在 WallpaperSync.kt 里，
+                    // 日后想捡回来直接接上入口即可，不用重写。
                     GlassButton(
                         onClick = { wallpaperPicker.launch(
                             androidx.activity.result.PickVisualMediaRequest(
@@ -1031,6 +1054,12 @@ fun SettingsScreen(backdrop: Backdrop) {
         updateMsg = updateMsg,
         onDismiss = { showAboutSheet = false },
         onOpenReleases = { AppUpdater.openReleases(context) },
+        onOpenHistory = {
+            // 先关关于弹窗再导航：两个 overlay 同屏会有层级问题
+            // （同 v2.8.10 打赏弹窗那次踩的坑，不同屏后层级问题自然消失）
+            showAboutSheet = false
+            onOpenHistory()
+        },
         onCheckUpdate = { checkUpdate() },
         // v2.8.10：先关关于弹窗，等退场动画走完再拉起打赏弹窗。
         // 根因：打赏弹窗宿主在 App 启动时就注册进 GlassOverlayPortal（列表底部），
@@ -1077,6 +1106,7 @@ private fun AboutSheet(
     updateMsg: String?,
     onDismiss: () -> Unit,
     onOpenReleases: () -> Unit,
+    onOpenHistory: () -> Unit = {},
     onCheckUpdate: () -> Unit,
     onSupport: () -> Unit
 ) {
@@ -1090,12 +1120,42 @@ private fun AboutSheet(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 22.dp)
         ) {
-            Text(
-                "关于题屿",
-                color = ui.text, fontSize = 23.sp, fontWeight = FontWeight.Bold,
-                fontFamily = AboutKai,
-                modifier = Modifier.padding(top = 8.dp)
-            )
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "关于题屿",
+                    color = ui.text, fontSize = 23.sp, fontWeight = FontWeight.Bold,
+                    fontFamily = AboutKai,
+                    modifier = Modifier.weight(1f)
+                )
+                // v2.19.34：发展历程入口
+                Row(
+                    Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .clickable(
+                            interactionSource = null,
+                            indication = null,
+                            onClick = onOpenHistory
+                        )
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        AppIcons.Timer, null, tint = ui.textSub,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        "历程",
+                        color = ui.textSub, fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(start = 4.dp)
+                    )
+                }
+            }
             // 虚线分隔（参考用户旧版刷题本的文档式排版）
             Canvas(
                 Modifier
@@ -1111,10 +1171,20 @@ private fun AboutSheet(
                     pathEffect = PathEffect.dashPathEffect(floatArrayOf(5.dp.toPx(), 4.dp.toPx()))
                 )
             }
+            // v2.19.33 重写：旧文案还停在「顺序刷题/随机刷题/模考/错题本」四件套，
+            // 而 app 早已不是那四件套了——五种题型、题库导入、打卡热力图、分享卡、
+            // 桌面小组件、快捷方式都在。介绍比功能少，久了就成了误导。
             Text(
-                "题屿把无人机装调修理的题库搬进了手机，顺序刷题、随机刷题、模拟考试和错题本，都在这座小岛上。",
+                "题屿把无人机装调的题库搬进了手机，顺手做成了一间自习室。",
                 color = ui.text, fontSize = 14.sp, lineHeight = 25.sp, fontFamily = AboutKai,
                 modifier = Modifier.padding(top = 14.dp)
+            )
+            Text(
+                "五种题型都能答，答错了自动收进错题本，连续答对就毕业；模考能限时、能即时判对错，" +
+                    "还能优先抽没做过的题、把选项打乱。打卡、学习热力图、成绩分享卡、桌面小组件都在，" +
+                    "题库不够的话可以自己导入 CSV 或 ZIP。",
+                color = ui.text, fontSize = 14.sp, lineHeight = 25.sp, fontFamily = AboutKai,
+                modifier = Modifier.padding(top = 12.dp)
             )
             Text(
                 "做它的原因很简单：刷题不想一直抱着厚厚的文档，想在手机上随时做几道题。做着做着，就长成了现在的样子。",

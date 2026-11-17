@@ -77,6 +77,26 @@ interface QuestionDao {
     @Query("SELECT DISTINCT category FROM questions WHERE bankId = :bankId ORDER BY category")
     suspend fun categories(bankId: String): List<String>
 
+    // v2.19.32 模考「优先未答」：LEFT JOIN question_stats，取 attempts=0 的题。
+    // 「未答过」的口径 = question_stats 里没有记录，或记录了但 attempts 仍为 0
+    // （后者是历史脏数据的可能形态，宁可算作未答，也不要漏掉本可抽的新题）。
+    // COALESCE(attempts,0)=0 而不是 IS NULL：见上方注释。
+    @Query(
+        "SELECT q.id FROM questions q " +
+            "LEFT JOIN question_stats s ON s.qid = q.id " +
+            "WHERE q.bankId = :bankId AND q.type = :type " +
+            "AND COALESCE(s.attempts, 0) = 0"
+    )
+    suspend fun unseenIdsByType(bankId: String, type: String): List<Long>
+
+    /** 同一口径的题量统计（模考配置页展示「未答 N 题」，避免用户开了开关却看不到效果依据） */
+    @Query(
+        "SELECT COUNT(*) FROM questions q " +
+            "LEFT JOIN question_stats s ON s.qid = q.id " +
+            "WHERE q.bankId = :bankId AND COALESCE(s.attempts, 0) = 0"
+    )
+    fun unseenCountByBankFlow(bankId: String): Flow<Int>
+
     @Query(
         "SELECT * FROM questions WHERE bankId = :bankId " +
             "AND (question LIKE '%' || :q || '%' OR options LIKE '%' || :q || '%' " +
@@ -138,6 +158,13 @@ interface RecordDao {
     )
     fun answeredDistinctByBankFlow(bankId: String): Flow<Int>
 
+    /** 一次性取值版（v2.19.48 预估通过率用，避免为一屏数字开一条常驻 Flow） */
+    @Query(
+        "SELECT COUNT(DISTINCT s.qid) FROM question_stats s " +
+            "JOIN questions q ON s.qid = q.id WHERE q.bankId = :bankId AND s.attempts > 0"
+    )
+    suspend fun answeredDistinctByBank(bankId: String): Int
+
     @Query(
         "SELECT COALESCE(SUM(s.correct),0) FROM question_stats s " +
             "JOIN questions q ON s.qid = q.id WHERE q.bankId = :bankId AND s.attempts > 0"
@@ -149,6 +176,21 @@ interface RecordDao {
             "JOIN questions q ON s.qid = q.id WHERE q.bankId = :bankId AND s.attempts > 0"
     )
     suspend fun totalAttemptsByBank(bankId: String): Int
+
+    /**
+     * 按题型的刷题统计（v2.19.48 预估通过率）。
+     *
+     * 返回的 distinctQuestions 是**去重题数**——刷 200 次同一批 40 道题，
+     * 证据量应当只算 40，而不是 200。
+     */
+    @Query(
+        "SELECT q.type AS type, COUNT(DISTINCT s.qid) AS distinctQuestions, " +
+        "       COALESCE(SUM(s.correct),0) AS correctSum, " +
+        "       COALESCE(SUM(s.attempts),0) AS attempts " +
+        "FROM question_stats s JOIN questions q ON s.qid = q.id " +
+        "WHERE q.bankId = :bankId AND s.attempts > 0 GROUP BY q.type"
+    )
+    suspend fun practiceTypeBreakdown(bankId: String): List<PracticeTypeRow>
 
     /** 按题库过滤的作答记录行（v2.8.2：今日/近 7 天逐日聚合用；ts 有索引） */
     @Query(
@@ -183,8 +225,52 @@ interface RecordDao {
     suspend fun clearStreaks()
 }
 
+/** 模考中某题型（某一场内）的作答对错统计（v2.19.48 预估通过率用） */
+data class ExamTypeRow(
+    val examId: Long,
+    val startedAt: Long,
+    val type: String,
+    val answered: Int,
+    val correct: Int
+)
+
+/** 刷题中某题型的去重题数与正确率（v2.19.48） */
+data class PracticeTypeRow(
+    val type: String,
+    val distinctQuestions: Int,
+    val correctSum: Int,
+    val attempts: Int
+)
+
 @Dao
 interface ExamDao {
+
+    /**
+     * 按场次 + 题型汇总模考作答（v2.19.48）。
+     *
+     * 只取已交卷（score 非空）的记录。题型靠 join questions 拿到——
+     * exam_records 里的 singleCount/judgeCount/extraCounts 只在开考时写、
+     * 反映的是**计划**构成，这里要的是**实际作答**构成。
+     */
+    @Query(
+        "SELECT er.id AS examId, er.startedAt AS startedAt, q.type AS type, " +
+        "       COUNT(ea.id) AS answered, " +
+        "       SUM(CASE WHEN ea.isCorrect = 1 THEN 1 ELSE 0 END) AS correct " +
+        "FROM exam_records er " +
+        "JOIN exam_answers ea ON ea.examId = er.id " +
+        "JOIN questions q ON q.id = ea.qid " +
+        "WHERE er.bankId = :bankId AND er.score IS NOT NULL " +
+        "GROUP BY er.id, q.type"
+    )
+    suspend fun typeBreakdown(bankId: String): List<ExamTypeRow>
+
+    /** 最近的已交卷模考（v2.19.48 时间衰减用） */
+    @Query(
+        "SELECT * FROM exam_records WHERE bankId = :bankId AND score IS NOT NULL " +
+        "ORDER BY startedAt DESC LIMIT :n"
+    )
+    suspend fun recentScoredExams(bankId: String, n: Int): List<ExamRecordEntity>
+
     @Insert
     suspend fun insertExam(e: ExamRecordEntity): Long
 
@@ -199,6 +285,13 @@ interface ExamDao {
 
     @Query("SELECT * FROM exam_records WHERE bankId = :bankId ORDER BY startedAt DESC LIMIT :n")
     fun recentExams(bankId: String, n: Int): Flow<List<ExamRecordEntity>>
+
+    /** 已交卷（有分数）的模考，倒序（v2.19.50 首页模考走势） */
+    @Query(
+        "SELECT * FROM exam_records WHERE bankId = :bankId AND score IS NOT NULL " +
+            "ORDER BY startedAt DESC LIMIT :n"
+    )
+    fun recentScoredExamsFlow(bankId: String, n: Int): Flow<List<ExamRecordEntity>>
 
     @Query("SELECT * FROM exam_answers WHERE examId = :examId")
     suspend fun answersFor(examId: Long): List<ExamAnswerEntity>
@@ -254,6 +347,13 @@ interface WrongDao {
 
     @Query("SELECT COUNT(*) FROM wrongbook WHERE removed = 0")
     fun wrongCountFlow(): Flow<Int>
+
+    /** 按题库隔离的错题数（v2.19.35：错题优先开关的说明文案用） */
+    @Query(
+        "SELECT COUNT(*) FROM wrongbook w JOIN questions q ON w.qid = q.id " +
+            "WHERE w.removed = 0 AND q.bankId = :bankId"
+    )
+    fun activeWrongCountByBankFlow(bankId: String): Flow<Int>
 
     @Query("UPDATE wrongbook SET removed = 1 WHERE qid = :qid")
     suspend fun markRemoved(qid: Long)

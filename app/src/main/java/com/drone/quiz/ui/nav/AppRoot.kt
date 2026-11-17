@@ -80,11 +80,10 @@ import com.drone.quiz.screens.ExamConfigScreen
 import com.drone.quiz.screens.ExamResultScreen
 import com.drone.quiz.screens.ExamScreen
 import com.drone.quiz.screens.HomeScreen
-import com.drone.quiz.screens.PhotoCaptureScreen
-import com.drone.quiz.screens.PhotoSearchScreen
 import com.drone.quiz.screens.PracticeConfigScreen
 import com.drone.quiz.screens.PracticeRunScreen
 import com.drone.quiz.screens.SearchScreen
+import com.drone.quiz.screens.HistoryScreen
 import com.drone.quiz.screens.SettingsScreen
 import com.drone.quiz.screens.WrongBookScreen
 import com.drone.quiz.screens.ExternalBankFile
@@ -123,11 +122,11 @@ object Routes {
     const val WRONG = "wrong"
     const val SETTINGS = "settings"
     const val SEARCH = "search"
-    const val PHOTO_CAPTURE = "photoCapture"
-    // v2.12.0：搜索页带初始关键词（拍照搜题未命中 → 引导文字搜索），
+    // v2.17.0：搜索页带初始关键词（外部导入未命中 / 其它入口引导文字搜索），
     // destination 改 pattern 形式；navigate("search") 仍可匹配（参数默认空）
     const val SEARCH_PATTERN = "search?init={init}"
-    const val PHOTO_SEARCH_PATTERN = "photoSearch?uri={uri}"
+    // v2.19.34：发展历程（从「关于题屿」旁进入，不在底栏 tab 里）
+    const val HISTORY = "history"
 
     /** Tab 页对应的 destination route（practice 的 destination route 是 pattern 形式） */
     val tabDestinations = listOf(HOME, PRACTICE_PATTERN, EXAM_CONFIG, WRONG, SETTINGS)
@@ -386,50 +385,11 @@ fun AppRoot(settings: RootSettings) {
                     SearchScreen(
                         backdrop = bgBackdrop,
                         initialQuery = initQuery,
-                        onBack = { navController.popBackStack() },
-                        onOpenCapture = {
-                            navController.navigate(Routes.PHOTO_CAPTURE) { launchSingleTop = true }
-                        }
+                        onBack = { navController.popBackStack() }
                     )
                     }
                 }
-                // 拍照搜题自建相机页（v2.13.0：CameraX 取景框引导 + 斜拍自动矫正前置）
-                composable(Routes.PHOTO_CAPTURE) {
-                    CompositionLocalProvider(LocalNavAnimatedVisibilityScope provides this) {
-                    PhotoCaptureScreen(
-                        onBack = { navController.popBackStack() },
-                        onCaptured = { uri ->
-                            navController.navigate(
-                                "photoSearch?uri=" + android.net.Uri.encode(uri.toString())
-                            ) {
-                                // 拍完弹掉相机页：返回键从结果页直接回搜索页
-                                popUpTo(Routes.PHOTO_CAPTURE) { inclusive = true }
-                                launchSingleTop = true
-                            }
-                        }
-                    )
-                    }
-                }
-                // 拍照搜题结果页（v2.12.0，非 Tab 全屏；未命中题可引导回文字搜索）
-                composable(
-                    Routes.PHOTO_SEARCH_PATTERN,
-                    arguments = listOf(navArgument("uri") { defaultValue = "" })
-                ) { entry ->
-                    val photoUri = android.net.Uri.decode(entry.arguments?.getString("uri") ?: "")
-                    CompositionLocalProvider(LocalNavAnimatedVisibilityScope provides this) {
-                    PhotoSearchScreen(
-                        backdrop = bgBackdrop,
-                        uri = photoUri,
-                        onBack = { navController.popBackStack() },
-                        onTextSearch = { text ->
-                            navController.navigate("search?init=" + android.net.Uri.encode(text)) {
-                                popUpTo(Routes.SEARCH) { inclusive = true }
-                                launchSingleTop = true
-                            }
-                        }
-                    )
-                    }
-                }
+                // v2.17.0：拍照搜题整体下线，相关路由与相机入口随之移除。
                 // 全屏刷题页（非 Tab destination → 无底栏遮挡；返回即回到配置页）
                 composable(
                     Routes.PRACTICE_RUN_PATTERN,
@@ -523,12 +483,24 @@ fun AppRoot(settings: RootSettings) {
                     )
                 }
                 composable(Routes.SETTINGS) {
-                    SettingsScreen(backdrop = bgBackdrop)
+                    SettingsScreen(
+                        backdrop = bgBackdrop,
+                        onOpenHistory = { navController.navigate(Routes.HISTORY) { launchSingleTop = true } }
+                    )
+                }
+                // v2.19.34 发展历程：全屏页，不在底栏 tab 中
+                composable(Routes.HISTORY) {
+                    HistoryScreen(backdrop = bgBackdrop) { navController.popBackStack() }
                 }
             }
             }
             }
         }
+
+        // v2.19.12：底部渐进式模糊已**整体移除**（用户裁定"干脆完全去掉"）。
+        // 四次实现（v2.6.0 蒙版 / v2.15.0 自写可变半径着色器 / v2.17.0 分层固定半径叠加 /
+        // v2.19.0 Agora 九抽头）连同 ProgressiveBlur.kt 一并删除，理由见 CHANGELOG。
+        // 底栏玻璃本身折射的是已模糊的内容层，视觉上并无缺憾。
 
         // 浮动玻璃底栏（仅 Tab 页显示；离场下滑独立动画，不与页面转场叠加）
         // 注：不给底栏套 Modifier.blur——方形 blur 层会在胶囊四周留下方框裁剪痕迹，

@@ -12,3 +12,6 @@ app/build/
 .cxx/
 /data/
 /keystore/
+
+# Local preview artifacts
+.preview/

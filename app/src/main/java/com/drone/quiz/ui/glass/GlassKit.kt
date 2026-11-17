@@ -85,6 +85,12 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.tanh
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.platform.LocalContext
+import kotlin.math.max
+import androidx.compose.ui.graphics.ImageBitmap
+import com.drone.quiz.R
+import androidx.compose.ui.graphics.drawscope.DrawScope
 
 /**
  * 全局画面特效状态（三级体系）。
@@ -299,6 +305,15 @@ fun GlassButton(
         label = "btnPressScale"
     )
 
+    // v2.19.26：主按钮（墨色）改用星空纹理底。
+    // 判据是「surfaceColor 恰好等于墨色」而不是新加参数——全 app 17 处墨色按钮
+    // 自动一致，将来新加的墨色按钮也不会漏。深色模式下 ui.ink 是浅米色，
+    // 判据天然不成立，所以深色模式仍走原来的浅底深字。
+    // 判据：实心强调底（surfaceColor 恰好是墨色）。深色模式下 ui.ink 是浅米色，
+    // 判据同样成立 —— 纹理会由 rememberAccentTexture 自动换成浅色那张。
+    val useStarfield = surfaceColor != Color.Unspecified && surfaceColor == ui.ink
+    val accentTex = rememberAccentTexture()
+
     val glassActive = refracts && GlassRuntime.enabled
     val acrylicActive = !glassActive && GlassRuntime.mode == GlassRuntime.MODE_ACRYLIC
 
@@ -316,7 +331,8 @@ fun GlassButton(
                     shape = { Capsule() },
                     effects = { blur(8f.dp.toPx()) },
                     onDrawSurface = {
-                        if (surfaceColor != Color.Unspecified) drawRect(surfaceColor)
+                        if (useStarfield) drawAccentTexture(accentTex)
+                        else if (surfaceColor != Color.Unspecified) drawRect(surfaceColor)
                         else drawRect(if (ui.isDark) Color.White.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.72f))
                     }
                 )
@@ -346,10 +362,15 @@ fun GlassButton(
             }
             .shadow(5.dp, RoundedCornerShape(50), spotColor = Color.Black.copy(alpha = 0.12f))
             .clip(RoundedCornerShape(50))
+            .then(if (useStarfield) Modifier.accentTexture(accentTex) else Modifier)
             .background(
-                if (surfaceColor != Color.Unspecified) surfaceColor
-                else if (ui.isDark) Color.White.copy(alpha = 0.14f)
-                else Color.White.copy(alpha = 0.72f)
+                when {
+                    // 星空层已经铺了底，background 必须让位，否则会盖住纹理
+                    useStarfield -> Color.Transparent
+                    surfaceColor != Color.Unspecified -> surfaceColor
+                    ui.isDark -> Color.White.copy(alpha = 0.14f)
+                    else -> Color.White.copy(alpha = 0.72f)
+                }
             )
             .border(
                 0.75.dp,
@@ -415,7 +436,9 @@ fun GlassButton(
                         drawRect(tint, blendMode = BlendMode.Hue)
                         drawRect(tint.copy(alpha = 0.75f))
                     }
-                    if (surfaceColor != Color.Unspecified) {
+                    if (useStarfield) {
+                        drawAccentTexture(accentTex)
+                    } else if (surfaceColor != Color.Unspecified) {
                         drawRect(surfaceColor)
                     }
                 }
@@ -497,6 +520,7 @@ fun GlassSlider(
     refracts: Boolean = true
 ) {
     val ui = LocalUi.current
+
     val glassActive = refracts && GlassRuntime.enabled
     val trackColor =
         if (!ui.isDark) Color(0xFF787878).copy(0.2f) else Color(0xFF787880).copy(0.36f)
@@ -722,6 +746,7 @@ fun GlassToggle(
     val accentColor = ui.ink
     val trackBaseColor =
         if (!ui.isDark) Color(0xFF787878).copy(0.2f) else Color(0xFF787880).copy(0.36f)
+    val accentTex = rememberAccentTexture()
 
     val density = LocalDensity.current
     val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
@@ -790,7 +815,11 @@ fun GlassToggle(
                 .layerBackdrop(trackBackdrop)
                 .clip(Capsule())
                 .drawBehind {
-                    drawRect(lerp(trackBaseColor, accentColor, dampedDragAnimation.value))
+                    // v2.19.28：开启时强调底走纹理。按拖动进度淡入，
+                    // 手指拖滑块的过程中纹理跟着渐显，与原来颜色插值的手感一致。
+                    val t = dampedDragAnimation.value
+                    drawRect(lerp(trackBaseColor, accentColor, t))
+                    if (t > 0.01f) drawAccentTexture(accentTex, alpha = t)
                 }
                 .size(64f.dp, 28f.dp)
         )

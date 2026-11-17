@@ -56,9 +56,18 @@ data class SessionSlots(val entries: Map<String, PracticeSession> = emptyMap())
  */
 @Serializable
 data class ExamQuickConfig(
-    val counts: Map<String, Int> = emptyMap(), // 题型 → 题数
+    val counts: Map<String, Int> = emptyMap(), // 题型 → 题数（**开考时的派生态**，
+                                               //   供快捷方式/小组件「快速模考」直接复用）
     val durationMin: Int = 60,                 // 考试时长（分钟）
-    val typeOrder: List<String> = emptyList()  // 题型顺序（空 = 规范序）
+    val typeOrder: List<String> = emptyList(), // 题型顺序（空 = 规范序）
+    // ↓↓↓ v2.19.47：用户拖滑杆时的**原始意图**，不是派生的题数 ↓↓↓
+    // 之前只存 counts，导致「判断题占比 30%→20%」重启后又显示 30%：
+    // counts 是按占比算完、再被题库可用题量裁剪过的结果，从它反推占比必然失真
+    // （默认库 640 单选 + 160 判断，20% 落到 50 题上会被裁成同一个数）。
+    // 记忆设置必须记用户**想要**什么，不是**算出来**什么。
+    val judgeRatio: Float = 0.3f,              // 判断题占比（滑杆直读直写）
+    val manualRatios: Map<String, Int> = emptyMap(), // 手动模式下各题型百分比
+    val autoMix: Boolean = true                // 是否自动按题库占比配比
 )
 
 data class AppSettings(
@@ -72,7 +81,15 @@ data class AppSettings(
     val practiceOrder: Int = 0,  // 0 顺序 1 随机
     val effects: Boolean = true, // 画面特效（液态玻璃）；异常退出后自动降级时为 false 效果
     val bankVersion: Int = 0,    // 已加载题库的版本（与 assets questions.json 的 version 比对）
-    val glassBlur: Int = 1,      // 底栏玻璃模糊档位：0 低 / 1 中 / 2 高
+    /**
+     * 底栏模糊档位 0/1/2。**同一个值在两种画面特效下含义不同**（v2.19.20）：
+     * · 液态玻璃（effects=true）：0 关（纯玻璃，零模糊）/ 1 轻 / 2 重
+     * · 亚克力（effects=false）：  0 低 / 1 中 / 2 高（维持原值 4/8/14dp）
+     * 用户反馈液态玻璃要能"完全没有模糊"的一档，故 0 在液态玻璃下改为零模糊；
+     * 亚克力保留原三档不动，故同一存储值需按 effects 分别解释——改这里务必同步
+     * GlassBottomBar 的档位映射与 SettingsScreen 的档位文案。
+     */
+    val glassBlur: Int = 1,      // 见上：档位 0/1/2
     val wallpaper: String = "",  // 全局壁纸文件路径（空 = 默认渐变）
     val wallpaperBlur: Boolean = false, // 壁纸是否模糊化（作玻璃背景纹路）
     val nickname: String = "",   // 用户昵称（空 = 首页只按时间问候，不带称呼）
@@ -85,6 +102,19 @@ data class AppSettings(
     val examIncludeShort: Boolean = false, // 模考高级选项：含简答题（默认关）
     val examTypeOrder: List<String> = emptyList(), // 模考题型顺序（空 = 单选→多选→填空→判断→简答）
     val examAutoMix: Boolean = true, // 模考题型构成：自动按题库各题型占比配比（关 = 手动拖比例，v2.8.3）
+    // v2.18.0 模考即时判定：关 = 全卷交后统核正误（传统模考口径，默认）；
+    // 开 = 逐题作答、当场验得失。仅改显示时机，判分与成绩单口径完全不变。
+    val examInstantJudge: Boolean = false,
+    // v2.19.32 模考优先未答：先抽 attempts=0 的题，该题型不够时回填已答题。
+    // 默认开——题库 800 题、模考一次 50，纯随机会反复抽到已做过的。
+    val examPreferUnseen: Boolean = true,
+    // v2.19.33 模考选项打乱：仅模考生效，单选/多选打乱，判断题不打乱。
+    // 与 examInstantJudge 完全解耦——两者可同时开：判定照常给对错与正确答案，
+    // 只是解析文字里的「选C」会跟乱序后的选项对不上，故此开关开着时隐藏解析。
+    val examShuffleOptions: Boolean = false,
+    // v2.19.35 错题优先：先抽错题本（removed=0）里的题。
+    // 与 examPreferUnseen 同开时错题优先——答错过的比没做过的更该先复习。
+    val examPreferWrong: Boolean = false,
     val eyeCareReminder: Boolean = false, // v2.8.6 护眼提醒：连续刷题 20 分钟弹窗提醒休息（考试不受影响）
     val onboardingDone: Boolean = false, // v2.9.0 首启功能引导已完成/已跳过（跳过即不再自动弹）
     // v2.10.0 桌面小组件 / 成绩分享卡
@@ -138,6 +168,10 @@ class SettingsStore(private val context: Context) {
         val examIncludeShort = booleanPreferencesKey("exam_include_short")
         val examTypeOrder = stringPreferencesKey("exam_type_order")
         val examAutoMix = booleanPreferencesKey("exam_auto_mix")
+        val examInstantJudge = booleanPreferencesKey("exam_instant_judge")
+        val examPreferUnseen = booleanPreferencesKey("exam_prefer_unseen")
+        val examShuffleOptions = booleanPreferencesKey("exam_shuffle_options")
+        val examPreferWrong = booleanPreferencesKey("exam_prefer_wrong")
         // v2.8.6 护眼提醒
         val eyeCareReminder = booleanPreferencesKey("eye_care_reminder")
         // v2.9.0 首启功能引导
@@ -187,6 +221,10 @@ class SettingsStore(private val context: Context) {
                 runCatching { json.decodeFromString<List<String>>(raw) }.getOrNull()
             } ?: emptyList(),
             examAutoMix = p[K.examAutoMix] ?: true,
+            examInstantJudge = p[K.examInstantJudge] ?: false,
+            examPreferUnseen = p[K.examPreferUnseen] ?: true,
+            examShuffleOptions = p[K.examShuffleOptions] ?: false,
+            examPreferWrong = p[K.examPreferWrong] ?: false,
             eyeCareReminder = p[K.eyeCareReminder] ?: false,
             onboardingDone = p[K.onboardingDone] ?: false,
             dailyGoal = p[K.dailyGoal] ?: 30,
@@ -383,6 +421,16 @@ class SettingsStore(private val context: Context) {
 
     /** 模考题型构成：自动配比开关（v2.8.3） */
     suspend fun setExamAutoMix(v: Boolean) = context.dataStore.edit { it[K.examAutoMix] = v }
+
+    /** v2.18.0：模考即时判定开关（关=全卷交后统核，开=逐题当场验得失）。 */
+    suspend fun setExamInstantJudge(v: Boolean) = context.dataStore.edit { it[K.examInstantJudge] = v }
+
+    suspend fun setExamPreferUnseen(v: Boolean) = context.dataStore.edit { it[K.examPreferUnseen] = v }
+
+    suspend fun setExamShuffleOptions(v: Boolean) = context.dataStore.edit { it[K.examShuffleOptions] = v }
+
+    suspend fun setExamPreferWrong(v: Boolean) = context.dataStore.edit { it[K.examPreferWrong] = v }
+
 
     suspend fun setExamTypeOrder(list: List<String>) {
         context.dataStore.edit { p ->

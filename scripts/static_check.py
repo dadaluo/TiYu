@@ -10,9 +10,11 @@
 
 退出码：0 = PASS，1 = FAIL（缺失必备 API / 括号不平衡 / 目录不存在）。
 """
+import json
 import os
 import shutil
 import subprocess
+import re
 import sys
 
 DEFAULT_BASE = os.path.normpath(os.path.join(
@@ -130,7 +132,7 @@ must = [
     ("scrolledFromTopPx", "柔化连续渐显"),
     ("clipToBounds", "Bounce 过冲裁剪"),
     ("remainingBottomPx", "网格底部剩余像素"),
-    ("IntrinsicSize.Min", "双卡等高"),
+    ("StreakHeatmap", "打卡热力图(v2.19.7，双卡已合并为单全宽卡)"),
     ("wallScrim", "壁纸主题纱"),
     ("practiceSessionRandom", "刷题会话随机槽"),
     ("examDeleteQuota", "模考删除周限额"),
@@ -273,15 +275,28 @@ for _mime in ["application/zip", "application/x-zip-compressed", "application/oc
 import re as _re
 _gradle_src = load(_repo_root + "/app/build.gradle.kts")
 _wf_src = load(_repo_root + "/.github/workflows/build.yml")
-_vname = _re.search(r'versionName = "([\d.]+)"', _gradle_src)
-_vcode = _re.search(r'versionCode = (\d+)', _gradle_src)
-_wf_name = _re.search(r'APP_VERSION_NAME: ([\d.]+)', _wf_src)
-_wf_tag = _re.search(r'APP_VERSION_TAG: v?([\d.]+)', _wf_src)
+# v2.19.24 起 gradle 里版本号可能是 `-PtiyuPreview=true` 的条件表达式（草稿预览包）。
+# 正则须兼容两种写法：取**正式版**那一支（条件为 false / else 的那侧），
+# 这样 static_check 校验的始终是要发的正式版本，而不是预览版本。
+_vname = (_re.search(r'versionName\s*=\s*if\b[\s\S]*?"([^"]+)"\s*else\s*"([^"]+)"', _gradle_src)
+          or _re.search(r'versionName\s*=\s*"([^"]+)"', _gradle_src))
+_vcode = (_re.search(r'versionCode\s*=\s*if\b[\s\S]*?\s(\d+)\s+else\s+(\d+)', _gradle_src)
+          or _re.search(r'versionCode\s*=\s*(\d+)', _gradle_src))
+# gradle 里可能是 `-PtiyuPreview=true` 的条件表达式（草稿预览包），两个分支都可能有值：
+#   group(1) = preview 分支（2.19.24-preview），group(2) = 正式分支（2.19.23）
+# build.yml 侧若是 preview（名字带 -preview）就比对 group(1)，否则比对 group(2)。
+_is_preview = "APP_VERSION_NAME:" in _wf_src and "-preview" in _wf_src.split("APP_VERSION_NAME:")[1].split("\n")[0]
+_vi = 1 if _is_preview else 2
+_vn = _vname.group(_vi) if _vname.re.groups >= 2 else _vname.group(1)
+_vc = _vcode.group(_vi) if _vcode.re.groups >= 2 else _vcode.group(1)
+# 预览包的版本名带 -preview 后缀（与 gradle 的 preview 分支对齐）
+_wf_name = _re.search(r'APP_VERSION_NAME: ([\w.\-]+)', _wf_src)
+_wf_tag = _re.search(r'APP_VERSION_TAG: v?([\w.\-]+)', _wf_src)
 if not (_vname and _vcode and _wf_name and _wf_tag):
     print("[FAIL] 版本号解析失败（gradle / build.yml 格式变更，请修 3.9 节正则）"); fail = True
 else:
-    if not (_vname.group(1) == _wf_name.group(1) == _wf_tag.group(1)):
-        print(f"[FAIL] 版本号三处不一致: gradle={_vname.group(1)} "
+    if not (_vn == _wf_name.group(1) == _wf_tag.group(1)):
+        print(f"[FAIL] 版本号三处不一致: gradle={_vn} "
               f"build.yml name={_wf_name.group(1)} tag={_wf_tag.group(1)}")
         fail = True
 
@@ -338,97 +353,312 @@ if "补漏轮 · 此前已刷" not in _ps_src:
 if "autoNext && pagerState.currentPage < questions.size - 1" in _ps_src:
     print("[FAIL] onCommit 翻页条件回退为旧写法（末题停在原地不续轮）"); fail = True
 
-# 3.14) 拍照搜题（v2.12.0 引入 / v2.16.0 引擎重写）：OCR = PaddleOCR PP-OCRv4 mobile（det+rec）
-#       + MNN 推理（libdroneocr.so 薄封装 + vendor libMNN.so）；模型文件不随 APK 分发，
-#       首次使用拍照搜题时由 OcrModels 走国内线路（ModelScope）按需下载（filesDir 落地 +
-#       字节数/SHA-256 双校验 + 双 URL 线路互备 + 可取消/重试）——体积瘦身核心；
-#       ML Kit bundled 依赖必须移除（v2.16.0 前 APK 体积大头），unbundled 版照旧禁令（需 GMS）；
-#       v2.13.0 起拍照走自建 CameraX 页（CAMERA 权限 + uses-feature 不强制）；
-#       切题/匹配链路（segmentQuestions/matchQuestions）保持文件内完整。
-_gradle_src = load(_repo_root + "/app/build.gradle.kts")
-if "com.google.mlkit:text-recognition-chinese" in _gradle_src:
-    print("[FAIL] ML Kit bundled 中文识别依赖必须移除（v2.16.0 换 PaddleOCR+MNN 模型按需下载，APK 瘦身）"); fail = True
-if "play-services-mlkit" in _gradle_src:
-    print("[FAIL] 禁用 ML Kit unbundled 版（需 GMS，国行机不可用）"); fail = True
-if "externalNativeBuild" not in _gradle_src or "cmake" not in _gradle_src:
-    print("[FAIL] gradle 缺 externalNativeBuild/cmake 配置（libdroneocr.so 编不进来）"); fail = True
-if "androidx.camera:camera-camera2" not in _gradle_src or "androidx.camera:camera-view" not in _gradle_src:
-    print("[FAIL] v2.13.0 自建相机页 CameraX 依赖缺失"); fail = True
-_manifest_src = load(_repo_root + "/app/src/main/AndroidManifest.xml")
-if "android.permission.CAMERA" not in _manifest_src:
-    print("[FAIL] 自建相机页必须声明 CAMERA 权限（v2.13.0 起弃用系统相机 TakePicture）"); fail = True
-if "android.hardware.camera.any" not in _manifest_src:
-    print("[FAIL] 缺 uses-feature camera.any required=false（无相机设备会被拒装）"); fail = True
-_models_src = load(_repo_root + "/app/src/main/java/com/drone/quiz/ocr/OcrModels.kt")
-for _needle in ("modelscope.cn", "isReady", "ensure", "sha256Of", "detFile", "recFile",
-                "MessageDigest", "filesDir"):
-    if _needle not in _models_src:
-        print(f"[FAIL] 模型按需下载管理器不完整：缺 {_needle}（国内线路/校验/落地 防回归）"); fail = True
-_paddle_src = load(_repo_root + "/app/src/main/java/com/drone/quiz/ocr/PaddleOcr.kt")
-for _needle in ("PP-OCRv4", "nativeRun", "dbPostprocess", "mergeLines", "recognizeLine",
-                "ppocr_keys_v1.txt", "detPtr", "recPtr"):
-    if _needle not in _paddle_src:
-        print(f"[FAIL] PaddleOCR 推理流水线不完整：缺 {_needle}"); fail = True
-_onative_src = load(_repo_root + "/app/src/main/java/com/drone/quiz/ocr/OcrNative.kt")
-for _needle in ("nativeCreate", "nativeRun", "nativeClose", "droneocr"):
-    if _needle not in _onative_src:
-        print(f"[FAIL] MNN JNI 封装不完整：缺 {_needle}"); fail = True
-_cpp_src = load(_repo_root + "/app/src/main/cpp/ocr_mnn.cpp")
-for _needle in ("createFromFile", "resizeSession", "runSession", "copyFromHostTensor"):
-    if _needle not in _cpp_src:
-        print(f"[FAIL] OCR native 胶水层不完整：缺 {_needle}"); fail = True
-_cmake_src = load(_repo_root + "/app/src/main/cpp/CMakeLists.txt")
-for _needle in ("droneocr", "libMNN.so", "max-page-size=16384"):
-    if _needle not in _cmake_src:
-        print(f"[FAIL] CMake 配置不完整：缺 {_needle}"); fail = True
+# 3.14) 拍照搜题 / OCR 整体下线（v2.17.0 用户裁定，v2.12.0~v2.16.0 整条链路作废）：
+#       从「必须存在」反转为「禁止复活」——模块整体删除后，任何文件/依赖/权限/资源
+#       的残留都视为半拆状态（会拖慢构建、虚增 APK、或让相机权限无端索权）。
+#       曾经的实现：PaddleOCR PP-OCRv4 mobile(det+rec) + MNN 推理(libdroneocr.so)、
+#       模型首用按需下载(OcrModels)、自建 CameraX 取景页、切题/段级匹配链路。
+#       下线范围：ocr/ 四个 kt、screens/PhotoCaptureScreen.kt、screens/PhotoSearchScreen.kt、
+#       src/main/cpp/（CMake + ocr_mnn.cpp + MNN 头）、src/main/jniLibs/（libMNN 双 ABI + libc++）、
+#       assets/ocr/ppocr_keys_v1.txt，以及 gradle 的 CameraX×4 / exifinterface / externalNativeBuild /
+#       ndkVersion、manifest 的 CAMERA 权限与 camera.any 特性。
 import os as _os
-for _lib in ("app/src/main/jniLibs/arm64-v8a/libMNN.so",
-             "app/src/main/jniLibs/armeabi-v7a/libMNN.so",
-             "app/src/main/assets/ocr/ppocr_keys_v1.txt"):
-    if not _os.path.exists(_repo_root + "/" + _lib):
-        print(f"[FAIL] OCR 运行时资源缺失：{_lib}"); fail = True
-_ocr_src = load(_repo_root + "/app/src/main/java/com/drone/quiz/ocr/PhotoSearch.kt")
-for _needle in ("PaddleOcr.recognize", "OcrItem", "segmentQuestions", "matchQuestions",
-                "containOf", "matchSegments", "isPageChrome", "stemLines"):
-    if _needle not in _ocr_src:
-        print(f"[FAIL] 拍照搜题核心链路不完整：缺 {_needle}（段级匹配/页脚丢弃/连体强拆 防回归）"); fail = True
-_capture_src = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/PhotoCaptureScreen.kt")
-for _needle in ("ProcessCameraProvider", "takePicture", "RequestPermission", "ViewfinderOverlay"):
-    if _needle not in _capture_src:
-        print(f"[FAIL] 自建相机页不完整：缺 {_needle}"); fail = True
-_ps_src2 = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/PhotoSearchScreen.kt")
-if "PhotoBoxOverlay" not in _ps_src2:
-    print("[FAIL] 拍照搜题框选 overlay 缺失（用户口径：直接做框选）"); fail = True
+_manifest_src = load(_repo_root + "/app/src/main/AndroidManifest.xml")
+_BANNED_PATHS = (
+    "app/src/main/java/com/drone/quiz/ocr",
+    "app/src/main/java/com/drone/quiz/screens/PhotoCaptureScreen.kt",
+    "app/src/main/java/com/drone/quiz/screens/PhotoSearchScreen.kt",
+    "app/src/main/cpp",
+    "app/src/main/jniLibs",
+    "app/src/main/assets/ocr",
+)
+for _p in _BANNED_PATHS:
+    if _os.path.exists(_repo_root + "/" + _p):
+        print(f"[FAIL] 拍照搜题/OCR 已整体下线（v2.17.0），残留路径复活：{_p}"); fail = True
+# 路由 / 入口 / 依赖 / 权限：源码与配置里的任何提及都算残留
+for _needle, _why in (
+    ("PhotoCaptureScreen", "自建相机页类名"),
+    ("PhotoSearchScreen", "拍照搜题结果页类名"),
+    ("photoCapture", "拍照路由 photoCapture"),
+    ("photoSearch", "拍照路由 photoSearch"),
+    ("onOpenCapture", "搜索页相机入口回调"),
+    ("PaddleOcr", "PaddleOCR 推理流水线"),
+    ("OcrModels", "OCR 模型按需下载器"),
+    ("OcrNative", "MNN JNI 封装"),
+    ("ppocr_keys_v1", "OCR 字典资源"),
+    ("libdroneocr", "OCR native 胶水层"),
+    ("libMNN", "MNN 运行时"),
+    ("segmentQuestions", "拍照搜题切题链路"),
+    ("matchQuestions", "拍照搜题匹配链路"),
+):
+    _hits = grep_hits(_needle)
+    if _hits:
+        print(f"[FAIL] 拍照搜题/OCR 残留（v2.17.0 已下线）——{_why}：{_needle} 命中 {len(_hits)} 处，例 {_hits[0][:110]}")
+        fail = True
+for _dep in ("androidx.camera", "exifinterface", "com.google.mlkit", "play-services-mlkit"):
+    if _dep in _gradle_src:
+        print(f"[FAIL] 拍照搜题下线后不应再依赖 {_dep}（相机/EXIF/ML Kit OCR）"); fail = True
+if "externalNativeBuild" in _gradle_src or "ndkVersion" in _gradle_src:
+    print("[FAIL] 拍照搜题下线后工程已无 native 代码，externalNativeBuild/ndkVersion 须一并移除"); fail = True
+if "android.permission.CAMERA" in _manifest_src or "android.hardware.camera.any" in _manifest_src:
+    print("[FAIL] 拍照搜题下线后不应再声明 CAMERA 权限 / camera.any 特性（无端索权）"); fail = True
 
-# 3.15) 拍照搜题单题模式（v2.14.0，用户口径：默认单体单体搜，手动框兜底漏题）：
-#       结果页默认 singleMode=true（单题优先，整页退居可选切换）；手动框选链路完整
-#       （linesInRegion 框内行提取 + segmentQuestions 重切 + 拖拽手势 detectDragGestures）；
-#       上下题切换导航存在；相机取景框单题横向长条（0.45 比例）。
-for _needle in ("singleMode", "detectDragGestures", "applyRegion", "上一题", "下一题"):
-    if _needle not in _ps_src2:
-        print(f"[FAIL] 拍照搜题单题模式不完整：缺 {_needle}"); fail = True
-if "singleMode by remember { mutableStateOf(true) }" not in _ps_src2:
-    print("[FAIL] 单题模式必须为默认开启（用户口径：默认单体单体搜）"); fail = True
-if "linesInRegion" not in _ocr_src:
-    print("[FAIL] 手动框选行提取 linesInRegion 缺失"); fail = True
-if "0.45f" not in _capture_src:
-    print("[FAIL] 取景框应改为单题横向长条（0.45 比例）"); fail = True
+# 3.15) 渐进式模糊 —— v2.19.12 起**已整体移除**，此处只做「不得复活」的封锁
+_prog_path = _repo_root + "/app/src/main/java/com/drone/quiz/ui/glass/ProgressiveBlur.kt"
+if os.path.exists(_prog_path):
+    print("[FAIL] ProgressiveBlur.kt 已被移除（用户裁定『干脆完全去掉』），不得复活"); fail = True
+if os.path.exists(_prog_path + ".bak"):
+    print("[FAIL] 不得留 ProgressiveBlur.kt.bak 之类的残留"); fail = True
+_blur_hits = grep_hits("bottomEdgeBlur")
+if _blur_hits:
+    print("[FAIL] bottomEdgeBlur 已被移除，不得复活：")
+    for h in _blur_hits[:6]:
+        print("   ", h)
+    fail = True
+for _f in ("HomeScreen.kt", "PracticeConfig.kt", "ExamScreens.kt",
+           "WrongBookScreen.kt", "SettingsScreen.kt"):
+    if "gradientBlurEdges" in load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/" + _f):
+        print(f"[FAIL] {_f} 不得再挂 gradientBlurEdges"); fail = True
 
-# 3.16) 每日提醒后台保活（v2.15.0 引入，v2.16.0 维持）+ 渐进式模糊整体撤除（v2.16.0 用户裁定）：
-#       A. 渐进式模糊必须不存在：ProgressiveBlur.kt 文件删除 + 全仓 0 命中（含注释）——
-#          v2.15.0 曾上架，v2.16.0 起整体回撤（用户实测后裁定撤除），保留即半拆状态；
-#       B. 每日提醒调度引擎维持 AlarmManager（WorkManager 全移除）：精确闹钟 + 开机重排 +
+# 3.15b) 打卡热力图（v2.19.7）
+#   「连击卡 + 今日卡」两半并排 → 合并为一张全宽卡：顶行连击/今日两个数字，
+#   中部 13 周热力图，底行脚注。半屏宽度塞不下 13 周，故必须合并。
+_home_src2 = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/HomeScreen.kt")
+if "StreakHeatmap(" not in _home_src2:
+    print("[FAIL] 首页缺打卡热力图"); fail = True
+if "heatmapDays(" not in _home_src2:
+    print("[FAIL] 热力图未接数据（Repo.heatmapDays）"); fail = True
+# 里程碑进度条按用户裁定移除——热力图已接管「我这阵子状态如何」
+if "val p = (stats.streak.toFloat() / milestone)" in _home_src2:
+    print("[FAIL] 里程碑进度条已按用户裁定移除，热力图接管该职责"); fail = True
+# 0 题时不得显示正确率（此前显示「正确 0%」，0 题不存在正确率，是假数据）
+if "正确 ${(stats.todayCorrect * 100) / stats.todayAnswered}%" in _home_src2 \
+        and "stats.todayAnswered > 0" not in _home_src2:
+    print("[FAIL] 今日正确率须在 todayAnswered > 0 时才显示（0 题不存在正确率）"); fail = True
+
+_heat_src = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/StreakHeatmap.kt")
+if not os.path.exists(_repo_root + "/app/src/main/java/com/drone/quiz/screens/StreakHeatmap.kt"):
+    print("[FAIL] 热力图组件文件缺失：screens/StreakHeatmap.kt"); fail = True
+else:
+    # 分档只看题量：levelOf() 函数体内不得出现 correct
+    _lvl = _heat_src[_heat_src.index("private fun levelOf("):]
+    _lvl = _lvl[:_lvl.index("}")]
+    if "correct" in _lvl:
+        print("[FAIL] 分档函数 levelOf() 不得引入正确率（低正确率染暗红像欠账）"); fail = True
+    # 未来日期必须留空不画，否则整张图左边看着缺一块
+    if "future" not in _heat_src:
+        print("[FAIL] 热力图须处理未来日期（留空不画）"); fail = True
+    # v2.19.8 三条排版约束：写死格子尺寸会在宽屏右侧空一大块
+    if "BoxWithConstraints" not in _heat_src:
+        print("[FAIL] 热力图格子尺寸必须按可用宽度算（写死会在宽屏右侧空一大块）"); fail = True
+    # 周内标签必须落在 0/2/4/6 行；写成四个盒子依次堆叠会把「日」挪到第 4 行
+    # v2.19.9：格子间距不得再丢。v2.19.8 每个格子写成 Modifier.size(cell) 且没给行间距，
+    # 格子连成实心板（用户反馈"过密"），而标签列却按 cell+gap 排版。
+    # 行间距靠 Column(spacedBy)；横向间距由「列宽 pitch - 格子 cell」的余量给出
+    if _heat_src.count("Arrangement.spacedBy(HeatGap)") < 1:
+        print("[FAIL] 每列内部须用 Arrangement.spacedBy(HeatGap) 给出行间距"
+              "（v2.19.8 漏掉行间距，格子连成实心板——用户反馈『过密』）"); fail = True
+    # 月份标签不得因列宽不足被截断（「10月」→「10」）
+    if "wrapContentWidth(unbounded = true)" not in _heat_src:
+        print("[FAIL] 月份标签须允许溢出所在列，否则「10月」会被截成「10」"); fail = True
+    # 月份标签不得设固定高度，9.sp 会被裁掉下半截
+    _month_row = _heat_src[_heat_src.index("// ---- 月份标签"):_heat_src.index("// ---- 格子矩阵")]
+    if ".height(" in _month_row:
+        print("[FAIL] 月份标签行不得设固定高度（v2.19.7 用 12.dp 把 9.sp 的字裁掉下半截）"); fail = True
+
+# v2.19.10 信息可读性（用户反馈"今日四十题，百分之七十"未明何意、
+# "答对二十八·答错十二"亦未解其义）
+_home4 = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/HomeScreen.kt")
+# 每个百分数必须带主语，否则读者无从判断那是什么的比例
+for _bare in ['Text(\n                                    "${(stats.todayCorrect * 100) / stats.todayAnswered}%"']:
+    if _bare in _home4:
+        print("[FAIL] 正确率必须带标签（用户反馈'百分之七十'未明何意）"); fail = True
+if "正确率 ${(stats.todayCorrect * 100) / stats.todayAnswered}%" not in _home4:
+    print("[FAIL] 今日正确率须写成『正确率 X%』——裸百分数读者无从判断是什么的比例"); fail = True
+# 答对/答错必须标明是「今日」
+if "今日答对 ${stats.todayCorrect}" not in _home4:
+    print("[FAIL] 答对/答错须标明『今日』——用户反馈'答对二十八·答错十二'未解其义"); fail = True
+# 里程碑注解挂在连击下，不得再放回底部脚注与答对/答错抢行
+if 'modifier = Modifier.padding(top = 10.dp),\n                    ) {\n                        Text(\n                            if (stats.todayAnswered > 0) {\n                                "再练' in _home4:
+    print("[FAIL] 里程碑注解应挂在连击下方，不应回到底部脚注行"); fail = True
+
+_heat2 = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/StreakHeatmap.kt")
+# 未来日须按 0 档绘制：只画到今天会让末列变成一根孤零零的竖条（用户反馈）
+if "future" not in _heat2 or "val future = c.timeInMillis > startOfToday" not in _heat2:
+    print("[FAIL] 未来日须按 0 档绘制（只画到今天会让末列脱节成孤条）"); fail = True
+if "if (!future) todayIndex = cells.size" not in _heat2:
+    print("[FAIL] 今天下标须按『最后一个非未来格』确定"); fail = True
+# 左侧星期栏已按用户裁定移除
+if "WeekdayLabels" in _heat2 or "HeatGutter" in _heat2:
+    print("[FAIL] 左侧星期栏已按用户裁定移除（'似可有可无'），勿加回来"); fail = True
+
+# v2.19.11：卡片高度、末列挤压、长按浮窗、底栏减效
+_heat3 = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/StreakHeatmap.kt")
+_home5 = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/HomeScreen.kt")
+# ① 卡片过高 → 周数固定为 22（约 5 个月）。18 周网格高 113dp，26 周格子仅 8dp 太小。
+if "HEATMAP_WEEKS = 22" not in _heat3:
+    print("[FAIL] 热力图周数须为 22（18 周卡片过高，26 周格子过小）"); fail = True
+# ② 末列被挤压 → 列宽必须「取整后由每一列自己声明」，不得靠 Row 自适应
+if "kotlin.math.floor(maxWidth.value / HEATMAP_WEEKS)" not in _heat3 or "Modifier.width(pitch)" not in _heat3:
+    print("[FAIL] 列宽须取整后由每列 width(pitch) 声明——靠 Row 自适应会压扁最后一列"
+          "（v2.19.10『右侧一列狭长如被挤压』）"); fail = True
+# ③ 详情浮窗：交互按图表惯例走**轻点**（不是长按），且渲染条件不得依赖自身尺寸
+#    箭头方向与浮窗坐标必须共用同一个 showBelow 判定（v2.19.12 二者各算各的，
+#    窗被翻到下方而箭头仍朝下）
+if "TooltipPositionProvider" not in _heat3 or "cellTop() - h - 10f" not in _heat3:
+    print("[FAIL] 浮窗坐标与箭头方向须共用同一个 showBelow 判定"); fail = True
+if "pitchPxOf" in _heat3 or "d.value * 3f" in _heat3:
+    print("[FAIL] Dp→px 换算不得硬编码密度，须用 LocalDensity"); fail = True
+for _needle in ("detectTapGestures", "onTap", "DayTip", "正确率"):
+    if _needle not in _heat3:
+        print(f"[FAIL] 热力图缺详情浮窗要素：{_needle}"); fail = True
+if "onLongPress" in _heat3:
+    print("[FAIL] 浮窗交互须为轻点（图表惯例，触屏无 hover）；长按须移除"); fail = True
+# v2.19.11 的鸡生蛋死锁：条件里要求 tipW>0 才渲染浮窗，而 tipW 只在渲染后才写入。
+# 注释里复述这段代码是正常的，故对去注释后的源码做此项检查。
+_heat3_code = re.sub(r"/\*.*?\*/", "", _heat3, flags=re.S)
+_heat3_code = re.sub(r"//[^\n]*", "", _heat3_code)
+if "tipIndex >= 0 && tipW > 0" in _heat3_code:
+    print("[FAIL] 浮窗渲染条件不得依赖自身尺寸（v2.19.11 因此只有框没有窗）"); fail = True
+if "Repo.HeatDay" not in _heat3 and "HeatDay" not in _heat3:
+    print("[FAIL] 浮窗需含当日答对数，格子数据须带 correct"); fail = True
+_repo_src = load(_repo_root + "/app/src/main/java/com/drone/quiz/data/repo/Repo.kt")
+if "data class HeatDay(val date: String, val answered: Int, val correct: Int)" not in _repo_src:
+    print("[FAIL] Repo.HeatDay 须含 correct（长按浮窗要显示当日正确率）"); fail = True
+if "heatmapDays(160)" not in _home5:
+    print("[FAIL] 取数天数须覆盖周数×7（HEATMAP_WEEKS=22 → 至少 154 天）"); fail = True
+# ④ 浮窗必须是**真·浮层**：用 Popup 独立窗口，不占布局、不被父级裁剪。
+#    v2.19.12~v2.19.14 三版都把浮窗当网格 Box 的子节点、用 offset 摆位置，
+#    于是陷入两难：窗高约 50dp 而格子只有 10dp，夹在网格内必然盖住旁边几列，
+#    允许越界就会压住脚注、冲出卡片被圆角裁掉——那是架构选错，不是参数没调好。
+for _needle in ("Popup(", "PopupPositionProvider", "dismissOnClickOutside"):
+    if _needle not in _heat3:
+        print(f"[FAIL] 详情浮窗须用 Popup 独立窗口浮在最上层（缺 {_needle}）"
+              "——嵌在布局里的做法已被证伪三轮"); fail = True
+if "tipW" in _heat3_code or "tipH" in _heat3_code:
+    print("[FAIL] 浮窗尺寸不得自行测量（PopupPositionProvider 已给量好的尺寸，"
+          "自行测量即回到鸡生蛋死锁）"); fail = True
+if "clipToBounds" in _heat3_code:
+    print("[FAIL] 网格区不得再靠 clipToBounds 兜底——浮窗已不在图里"); fail = True
+
+# ⑤ 卡片高度须锁死：顶行两处注解、两个大数字、脚注全部 maxLines = 1，
+#    文案长短不一（大字号/小屏下会换行）不得撑高整张卡
+_home6 = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/HomeScreen.kt")
+_blk = _home6[_home6.index("// ---- 顶行：连击（左） / 今日（右）----"):
+              _home6.index("// ---- 18 周热力图")]
+# 锚点改用**内容**而非注释名：图表卡的注释在 v2.19.50 改过名，
+# 按注释切片这类写法很脆（改个注释名就炸），换成唯一定位脚注文案。
+_foot_i = _home6.index('"今天还没开始，来几题热热手"')
+_foot = _home6[max(0, _foot_i - 400): _foot_i + 400]
+if _blk.count("maxLines = 1") < 4:
+    print("[FAIL] 打卡卡顶行四个文本须加 maxLines=1（文案长短不一会撑高卡片）"); fail = True
+if "maxLines = 1" not in _foot:
+    print("[FAIL] 打卡卡脚注须加 maxLines=1（『今日答对…』与『今天还没开始…』长短不一）"); fail = True
+
+# ⑥ 底栏不再有渐隐模糊（v2.19.12 已整体移除），本条随之作废
+
+# 选项圆标：字母必须真居中；判断题对勾/叉号必须自绘
+_qb = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/common/QuestionBody.kt")
+# Android includeFontPadding 默认 true（为 CJK 留白），会把 24dp 圆标里的字形整体压低
+if "includeFontPadding = false" not in _qb:
+    print("[FAIL] 选项圆标的字母须设 includeFontPadding=false —— Android 默认的 CJK "
+          "字形留白会把字压在圆心下方（用户反馈『字母偏下』）"); fail = True
+# 判断题 √/× 自绘；系统字符太细不好看。
+# v2.19.36 起自绘字形提到 JudgeGlyph.kt 共用（搜索页也要同一套），
+# 所以这里在 QuestionBody + JudgeGlyph.kt 两处合起来找。
+_jg2 = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/common/JudgeGlyph.kt")
+_qb2 = _qb + _jg2
+for _needle in ("JudgeBadgeGlyph", "drawPath(path, color)", "JUDGE_CHECK", "JUDGE_CROSS"):
+    if _needle not in _qb2:
+        print(f"[FAIL] 判断题圆标须自绘且用**填充多边形**（缺 {_needle}）——"
+              "描边折线在真机上『极丑而且不居中』：包围盒居中≠视觉重心居中"); fail = True
+_fmt = load(_repo_root + "/app/src/main/java/com/drone/quiz/data/repo/QuestionFormats.kt")
+if 'internal const val JUDGE_CHECK = "√"' not in _fmt:
+    print("[FAIL] JUDGE_CHECK/JUDGE_CROSS 须与 optionLabel 同源定义，避免标签与自绘分支漂移"); fail = True
+
+# v2.19.18：抽题随机性 + 考试页与刷题页对齐
+_repo2 = load(_repo_root + "/app/src/main/java/com/drone/quiz/data/repo/Repo.kt")
+_start = _repo2[_repo2.index("suspend fun startExam("):]
+_start = _start[:_start.index("suspend fun startExam(", 10)] if "suspend fun startExam(" in _start[10:] else _start
+if "sortedBy { typeRank[it.type]" not in _start:
+    print("[FAIL] startExam 须用稳定排序只按题型分组——追加 `, { it.id }` 会把"
+          "shuffled 后的组内顺序重排回 id 升序，用户反馈『抽题不太随机』"); fail = True
+if "sortedWith(compareBy({ typeRank[it.type] ?: 99 }, { it.id }))" in _start:
+    print("[FAIL] startExam 不得再按 id 次序排序（会抹掉随机顺序）"); fail = True
+
+_exam = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/ExamScreens.kt")
+if "OptionRow(" not in _exam:
+    print("[FAIL] 考试页单选/判断须复用共用 OptionRow —— 内联自绘会导致："
+          "判断题自绘勾叉不生效、无答错抖动动画、字号与刷题页不同步"); fail = True
+# 判定结果必须在**作答区之后**
+_vpos = _exam.find("ResultHeader(")
+_opos = _exam.find("OptionRow(")
+if _vpos < 0 or (_opos > 0 and _vpos < _opos):
+    print("[FAIL] 判定结果与解析须排在作答区**之后**（用户反馈『排版上把解析放到了前面』）"); fail = True
+if "ParseBlock(q.explanation" not in _exam:
+    print("[FAIL] 考试页解析须用共用 ParseBlock（与刷题页同构）"); fail = True
+
+# v2.19.19：即时判定开关必须真的生效；设置项副标题一律单行
+_exam2 = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/ExamScreens.kt")
+# v2.19.18 照搬刷题页的 `ua == null` 判据，但两页 ua 语义不同：
+# 刷题页 ua 是「提交后才写入」，模考页 ua 是「点一下就写入」——于是关掉即时判定
+# 也会当场点亮正确答案。且 enabled = ua == null 把「可改选」也一并禁掉了。
+# v2.19.22：这条禁令本身在 v2.19.22 被修正过一次。它当年只认「三态写法」，
+# 而三态写法把『选中态』和『判定态』挤在一个变量里，一关判定选中态就没了
+# （用户报告：关掉即时判定后点选项毫无反应）。现在要求**四态**：
+#   verdict != null → 才判对错（绿/红）；否则 ua.picked → 已选中（state 3）。
+# 意图不变：对错只能由 verdict 决定，绝不能用 ua 直接点亮正确答案。
+if "verdict != null -> when {" not in _exam2 or "i == ua.picked -> 3" not in _exam2:
+    print("[FAIL] 模考选项 state 须为四态：对错由 verdict 决定，未判定只显『已选中』—— "
+          "绝不能只用 ua 判对错（会当场亮答案），也不能退回三态（选中态会消失）")
+    fail = True
+# v2.19.22：这条禁令本身被修正过两次，教训记在这里。
+#   v2.19.18 传 enabled = ua == null → 关判定时也锁死，用户报"点不了"；
+#   v2.19.19 改成写死 enabled = true → 开判定时能反复改，用户裁定不对
+#            （口径：「选了就是选了，然后只能下一题」）。
+# 正确判据是 **是否已判定**：`enabled = !judged`，即 verdict != null 才锁。
+# 既不能拿 ua 当锁的判据（未判定就被锁死），也不能写死 true（已判定仍能改）。
+if "enabled = !judged," not in _exam2:
+    print("[FAIL] 模考单选/判断锁定判据须为 enabled = !judged——"
+          "判定后锁定只能下一题；未判定（含关掉即时判定）仍可改选。"
+          "既不能写死 true，也不能拿 ua 当判据"); fail = True
+# 设置项副标题：单行 + 省略号兜底，且不得再用长句
+if "overflow = TextOverflow.Ellipsis" not in _exam2:
+    print("[FAIL] 模考配置项副标题须加 TextOverflow.Ellipsis —— 用户反馈长副标题换行很难受"); fail = True
+for _long in ("逐题作答，当场验正误；已判定的题不再改动", "全卷交卷后统核正误（传统模考口径）",
+              "简答题提交后对照参考答案自评计分", "题型顺序 · 长按拖动调整（先做哪种题型）"):
+    if _long in _exam2:
+        print(f"[FAIL] 配置项副标题须 ≤10 字，长句不得保留：{_long}"); fail = True
+
+# 底栏模糊档位：同一存储值在两种画面特效下含义不同，改一处必须同步三处
+_set = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/SettingsScreen.kt")
+_bar = load(_repo_root + "/app/src/main/java/com/drone/quiz/ui/glass/GlassBottomBar.kt")
+_store = load(_repo_root + "/app/src/java/../java/com/drone/quiz/data/settings/SettingsStore.kt") \
+    if False else load(_repo_root + "/app/src/main/java/com/drone/quiz/data/settings/SettingsStore.kt")
+if '"底栏玻璃模糊"' in _set:
+    print("[FAIL] 设置项标题应为『底栏模糊』（用户要求去掉『玻璃』二字）"); fail = True
+if '"底栏模糊"' not in _set:
+    print("[FAIL] 找不到『底栏模糊』设置项"); fail = True
+# 亚克力维持低/中/高；液态玻璃为 关/轻/重
+if 'if (settings.effects) listOf("关", "轻", "重")' not in _set:
+    print("[FAIL] 液态玻璃下档位名须为 关/轻/重（含一档纯玻璃）；亚克力维持 低/中/高"); fail = True
+if 'else listOf("低", "中", "高")' not in _set:
+    print("[FAIL] 亚克力下档位名须维持 低/中/高 不变"); fail = True
+# 底栏须按 effects 分别解释同一档位，且零模糊时不挂 blur 效果
+if "if (glassSettings.effects)" not in _bar:
+    print("[FAIL] GlassBottomBar 的模糊档位须按 glassSettings.effects 分别解释"); fail = True
+if "if (barBlurPx > 0f) blur(barBlurPx)" not in _bar:
+    print("[FAIL] 液态玻璃『关』档须完全不放 blur 效果，退化为纯玻璃"); fail = True
+if "blur(barBlurDp.toPx())" in _bar:
+    print("[FAIL] 不得再无条件挂 blur(barBlurDp)（关档会退化成极轻模糊而非纯玻璃）"); fail = True
+if "亚克力（effects=false）：" not in _store:
+    print("[FAIL] SettingsStore.glassBlur 注释须写明两种特效下的不同解释，"
+          "避免后续改动只改一半"); fail = True
+
+# 3.16) 每日提醒后台保活（v2.15.0 引入，v2.16.0 维持，v2.17.0 维持）：
+#       每日提醒调度引擎维持 AlarmManager（WorkManager 全移除）：精确闹钟 + 开机重排 +
 #          电池白名单请求 + Receiver 注册 + 权限齐全。
-if _os.path.exists(_repo_root + "/app/src/main/java/com/drone/quiz/screens/common/ProgressiveBlur.kt"):
-    print("[FAIL] ProgressiveBlur.kt 必须删除（v2.16.0 用户裁定整体撤除渐进式模糊）"); fail = True
-if grep_hits("progressiveTopBlur"):
-    print("[FAIL] 渐进式模糊 API 残留（v2.16.0 已整体撤除）"); fail = True
-# createRuntimeShaderEffect/createChainEffect 仅在业务层（screens/）禁用——
-# vendored com.kyant.backdrop 库内部链式 RenderEffect 属正当使用，不在此列
-for _banned in ("createRuntimeShaderEffect", "createChainEffect"):
-    _banned_hits = [h for h in grep_hits(_banned) if "/screens/" in h]
-    if _banned_hits:
-        print(f"[FAIL] 渐进式模糊符号残留（v2.16.0 已整体撤除）：{_banned_hits}"); fail = True
+# 渐进式模糊的断言与禁令已移入 3.15（v2.17.0 起重新实现，路线改为分层固定半径模糊）
 _softfade_hits = grep_hits("softTopFade")
 if _softfade_hits:
     print(f"[FAIL] 旧顶部柔化函数必须彻底移除（v2.7.2 已裁定砍除），残留 {_softfade_hits}"); fail = True
@@ -455,6 +685,1128 @@ if "requestRunInBackground" not in _settings_src:
 _main_src = load(_repo_root + "/app/src/main/java/com/drone/quiz/MainActivity.kt")
 if "ReminderScheduler.schedule" not in _main_src:
     print("[FAIL] MainActivity 打开须自愈式补排每日提醒"); fail = True
+
+# 3.17) 模考即时判定（v2.18.0 新增，可选制）：
+#       「或全卷毕而统核正误，或逐题作而随验得失」——开关落在模考配置页高级选项，
+#       默认关闭保持传统模考口径；开启后选完当场亮对错。
+#       关键约束：**只改显示时机，不改判分口径**——题卡必须复用 judgeAnswer（与交卷同一函数），
+#       不得另写一套判定，否则成绩单与当场反馈会打架。
+_settings2 = load(_repo_root + "/app/src/main/java/com/drone/quiz/data/settings/SettingsStore.kt")
+for _needle in ("examInstantJudge", "exam_instant_judge", "setExamInstantJudge"):
+    if _needle not in _settings2:
+        print(f"[FAIL] 模考即时判定设置项不完整：SettingsStore 缺 {_needle}"); fail = True
+_exam_src = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/ExamScreens.kt")
+for _needle in ("即时判定", "setExamInstantJudge", "reveal = instantJudge"):
+    if _needle not in _exam_src:
+        print(f"[FAIL] 模考配置/考试页缺即时判定入口：{_needle}"); fail = True
+if _exam_src.count("judgeAnswer") < 2:
+    print("[FAIL] 题卡当场判定必须复用 judgeAnswer（与交卷判分同口径，禁止另写一套）"); fail = True
+_uf_src = load(_repo_root + "/app/src/main/java/com/drone/quiz/data/repo/QuestionFormats.kt")
+if "val confirmed: Boolean = false" not in _uf_src:
+    print("[FAIL] UserAnswer 缺 confirmed 字段（多选题点选是切换不是作答，需显式确认时刻）"); fail = True
+# 即时判定不得侵入成绩单口径（submitExam 在 Repo.kt）
+_repo_src2 = load(_repo_root + "/app/src/main/java/com/drone/quiz/data/repo/Repo.kt")
+_parts = _repo_src2.split("suspend fun submitExam")
+if len(_parts) < 2:
+    print("[FAIL] Repo.kt 找不到 submitExam（判分入口位置异常）"); fail = True
+else:
+    _submit_blk = "suspend fun submitExam".join(_parts[1:])
+    if "examInstantJudge" in _submit_blk or "instantJudge" in _submit_blk:
+        print("[FAIL] 即时判定开关不得影响 submitExam 判分/成绩单口径（仅改显示时机）"); fail = True
+
+# v2.19.38：这一行原先在 715 行，而 7.z2~7.z5 各检查段是**追加在它之后**的
+# —— 脚本到 sys.exit 就结束了，后面几百行新检查从来没执行过。
+# 表现是「检查写完了但永远 PASS」：注入 IntrinsicSize / 改回 42.dp 都测不出来。
+# 教训：新增检查段必须追加在**收尾输出之前**，别再靠"追加到文件末尾"的直觉。
+#
+# 同时这里做一次分段计数，段数与预期不符时明确报错——防止以后又有人
+# 把新段加到出口之后而无人察觉。
+EXPECTED_SECTIONS = 8  # 见下面各段注释：主段 + 7.x 各段
+
+
+# 4.x) 「更换壁纸」二级面板残留禁令（v2.19.21：用户反馈不需要，整体撤回）
+#      v2.19.20 曾在「更换壁纸」按钮下加二级面板（相册 / 同步系统壁纸）。
+#      用户要求改回最直接的做法：点按钮直接开系统相册选择器，多一次点击没意义。
+#      同步系统壁纸还额外要求「所有文件访问权限」——为一个可有可无的功能要这种
+#      敏感权限不划算，故清单也一并撤了。以下 token 若再次出现即为回归。
+_sheet_hits = grep_hits("WallpaperSourceRow")
+if _sheet_hits:
+    print("[FAIL] 「更换壁纸」二级面板已被撤回（用户要求直接开相册），不得复活：")
+    for _h in _sheet_hits[:5]:
+        print("   ", _h)
+    fail = True
+_manifest = load(_repo_root + "/app/src/main/AndroidManifest.xml")
+# 必须剥掉 XML 注释再查：manifest 里有一段注释正 explains「为何撤掉这个权限」，
+# 里面就写着 MANAGE_EXTERNAL_STORAGE 字样。整文件子串匹配的话，
+# 这条检查会永远报红——而实际上权限早撤了（实测踩过）。
+_manifest_code = re.sub(r"<!--.*?-->", "", _manifest, flags=re.S)
+if "MANAGE_EXTERNAL_STORAGE" in _manifest_code:
+    print("[FAIL] 清单里不得声明 MANAGE_EXTERNAL_STORAGE（v2.19.21 已随二级面板撤回）")
+    fail = True
+
+
+# 4.y) 模考单选/判断「已选中未判定」态残留禁令（v2.19.22）
+#      用户报告：关掉模考「即时判定」后点选项毫无反应，误以为点不动。
+#      根因是 OptionRow.state 只有 0/1/2 三态，判定一关 verdict 恒 null，
+#      state 跟着恒 0，选中态被一并抹掉。三处必须同时在位：
+#        1) OptionRow 注释里声明 3 态
+#        2) optionColors 有 3 分支
+#        3) 模考 state 计算有 `i == ua.picked -> 3`
+_exam = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/ExamScreens.kt")
+_qb = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/common/QuestionBody.kt")
+for _tok, _where, _txt in [
+    ("i == ua.picked -> 3", _exam, "模考单选/判断 state 计算缺『已选中未判定』分支"),
+    ("3 -> ui.ink.copy(alpha = 0.10f) to ui.ink.copy(alpha = 0.35f)", _qb,
+     "optionColors 缺 state 3（已选中未判定）配色"),
+    ("3 -> ui.ink                      // 已选中未判定：实心 ink 底 + 白字", _qb,
+     "OptionBadge 缺 state 3 徽标底色"),
+]:
+    if _tok not in _where:
+        print("[FAIL] " + _txt)
+        fail = True
+
+
+# 4.z) 多选「漏选 / 错选」四态残留禁令（v2.19.23）
+#      用户反馈：勾了 A、B、C 漏了 D，四个选项却全标"正确"，完全看不出漏在哪。
+#      根因：多选 resultState 把「是正确答案」一律记 1，没区分"选没选"。
+#      现在必须四态（1 正确 / 2 错选 / 3 漏选），且 3 要用 accent 琥珀色——
+#      用绿会和"正确"混、用红会被误读成"你选错了"。
+_pr = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/PracticeScreen.kt")
+_qb2 = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/common/QuestionBody.kt")
+_qf = load(_repo_root + "/app/src/main/java/com/drone/quiz/data/repo/QuestionFormats.kt")
+for _tok, _src, _msg in [
+    ("isKey -> 3", _pr, "刷题页多选 resultState 缺『漏选』分支（该选没选也显示『正确』）"),
+    ("3 -> Text(\"漏选\"", _qb2, "多选选项行缺『漏选』标签"),
+    ('2 -> Text("错选"', _qb2, "多选错选标签须叫『错选』（旧文案『你选的』看不出是选错了）"),
+    ("3 -> ui.accent.copy(alpha = 0.12f) to ui.accent.copy(alpha = 0.55f)", _qb2,
+     "多选漏选须用 accent 琥珀色（绿会和正确混、红会被读成你选错了）"),
+    ("fun pickedAnswerText(", _qf, "缺位掩码→字母的反解工具（多选『你的答案：A、B、C』要用）"),
+]:
+    if _tok not in _src:
+        print("[FAIL] " + _msg)
+        fail = True
+# 6.x) 可空作答不得用 `!!` 强解（v2.19.24 崩溃修复）
+#      用户真机崩溃报告：
+#        java.lang.NullPointerException
+#          at PracticeScreenKt.MultiSection(PracticeScreen.kt:943)
+#          ← PagerState.scrollToPage ← PracticeScreen.kt:326
+#      触发路径：切换题库 → 刷另一题库 → 滚到**未作答的多选题**必崩。
+#      根因：v2.19.23 把多选改成四态时，原本藏在 `else if (!submitted)` 分支里的
+#      `ua!!.picked` 被提到了选项渲染循环顶部，**挪出了 submitted 的保护范围**——
+#      未作答时 ua 为 null，而循环照跑。这是最典型的重构事故：保护圈被挪破了。
+#      编译与 static_check 全绿，只有真机能撞上（切题库 → details 清空 → 滚到多选题）。
+#
+#      还有一类同源隐患：`AnimatedVisibility(visible = submitted)` 的 content
+#      在**退出动画期间仍然组合**，此时 visible 已 false 而 ua 可能已是 null，
+#      所以连"看起来在保护里的" `ua!!` 也不能用。
+for _f in ["screens/PracticeScreen.kt", "screens/ExamScreens.kt"]:
+    _src = load(_repo_root + "/app/src/main/java/com/drone/quiz/" + _f)
+    for _ln, _l in enumerate(_src.split("\n"), 1):
+        _c = _l.split("//")[0]
+        if "ua!!" in _c:
+            print(f"[FAIL] {_f}:{_ln} 可空作答不得用 ua!! —— 未作答或退出动画期间 ua 可能为 null"
+                  f"（v2.19.24 崩溃）: {_l.strip()[:60]}")
+            fail = True
+
+
+# 7.x) 星空按钮底纹（v2.19.26）
+#      墨色主按钮改用星空纹理。三个渲染分支（亚克力 / 材质 / 真折射）都必须处理，
+#      漏一个就会出现「某种模式下按钮没星空」的不一致——所以三条都锁。
+_tex = _repo_root + "/app/src/main/res/drawable-nodpi/btn_starfield.jpg"
+import os as _os
+if not _os.path.exists(_tex):
+    print("[FAIL] 星空纹理 btn_starfield.jpg 缺失（drawable-nodpi/）——"
+          "墨色主按钮会退回纯色块"); fail = True
+_gk = load(_repo_root + "/app/src/main/java/com/drone/quiz/ui/glass/GlassKit.kt")
+# 必须等比裁切：横向拉宽的按钮会把星点拉成椭圆，一眼穿帮
+# v2.19.38：实现已从「每个渲染分支内联」重构为共用的 drawAccentTexture，
+# 等比裁切判据随之搬进那个函数——查错文件只会永远 FAIL。
+_at = load(_repo_root + "/app/src/main/java/com/drone/quiz/ui/glass/SurfaceTexture.kt")
+if "max(size.width / bmpW, size.height / bmpH)" not in _at:
+    print("[FAIL] 强调底纹必须等比裁切（Cover + 居中），不得横向拉伸")
+    fail = True
+# 判据必须是「surfaceColor == ui.ink」而不是新增参数：全 app 17 处墨色按钮自动一致
+if "surfaceColor == ui.ink" not in _gk:
+    print("[FAIL] 星空底纹判据应为 surfaceColor == ui.ink（深色模式 ui.ink 是浅米色，"
+          "判据天然不成立，故深色模式仍走浅底深字）"); fail = True
+# v2.19.38：drawStarfieldCropped 已并入共用的 drawAccentTexture，
+# 三个渲染分支各自调用它。查旧函数名会永远 FAIL——那是过时 token，不是回退。
+if _gk.count("drawAccentTexture(") < 3:
+    print("[FAIL] 强调底纹须在三个渲染分支都绘制（亚克力 / 材质 / 真折射，"
+          "经 drawAccentTexture），漏一个会出现模式间不一致"); fail = True
+
+
+# 7.y) 强调底纹理覆盖范围（v2.19.28）
+#      用户反馈：黑色按钮之外的黑色大面积元素（分段控件滑块、筛选 chip、开关轨道）
+#      也要同样的纹理；深色模式下强调底是浅色，于是又备了一张浅色水磨石。
+#      现在统一走 `ui.ink` 判据 + `rememberAccentTexture()`（按主题自动选深/浅那张），
+#      下列五类组件必须都接上，漏一处就会出现视觉语言不一致。
+_tex_dark = _repo_root + "/app/src/main/res/drawable-nodpi/btn_starfield.jpg"
+_tex_light = _repo_root + "/app/src/main/res/drawable-nodpi/btn_paper.jpg"
+import os as _os2
+for _p, _n in [(_tex_dark, "星空（浅色主题强调底）"), (_tex_light, "水磨石（深色主题强调底）")]:
+    if not _os2.path.exists(_p):
+        print(f"[FAIL] 强调底纹理缺失：{_n}")
+        fail = True
+_st = load(_repo_root + "/app/src/main/java/com/drone/quiz/ui/glass/SurfaceTexture.kt")
+if "if (ui.isDark) R.drawable.btn_paper else R.drawable.btn_starfield" not in _st:
+    print("[FAIL] 强调底纹理须按主题选择：深色 → btn_paper（浅）�� 浅色 → btn_starfield（深）")
+    fail = True
+if "max(size.width / bmpW, size.height / bmpH)" not in _st:
+    print("[FAIL] 强调底纹理必须等比裁切（Cover + 居中），不得横向拉伸")
+    fail = True
+# 五类组件：谁漏了就报谁的
+for _f, _tok, _who in [
+    ("ui/glass/GlassKit.kt", "drawAccentTexture(accentTex)", "GlassButton 主按钮"),
+    ("ui/glass/GlassKit.kt", "drawAccentTexture(accentTex, alpha = t)", "GlassToggle 开关轨道"),
+    ("screens/common/Common.kt", "accentTexture(rememberAccentTexture())", "SegmentedRow 滑动指示块"),
+    ("screens/PracticeConfig.kt", "Modifier.accentTexture(accentTex)", "ConfigChip 选中态"),
+    ("screens/WrongBookScreen.kt", "Modifier.accentTexture(accentTex)", "FilterChip 选中态"),
+]:
+    _src = load(_repo_root + "/app/src/main/java/com/drone/quiz/" + _f)
+    if _tok not in _src:
+        print(f"[FAIL] {_who} 未接入强调底纹理（{_f}）")
+        fail = True
+
+# 7.z) 模考选项打乱（v2.19.33）
+#      v2.11.0 做过一次、被整体 revert：当时「打乱」与「显示解析」共存，
+#      而解析文字里写死了「选C」这类原始选项字母，乱序后必然对不上。
+#      本版按用户新口径重做——**打乱即隐藏解析文字**，且与即时判定完全解耦
+#      （判定与正确答案照常给，只撤掉 ParseBlock）。
+#      结构性保证在于「视图层乱序、数据层恒原始空间」：
+#      判分/错题本/统计只见原始下标，靠的是 uaToOriginal 这个唯一出口。
+#      一旦有人改成直接拿显示空间的 ua 去落库或判分，整套答案就会错位——
+#      而这种错位编译期与运行期都不报错，只有用户对答案才发现。所以锁死。
+_osrc = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/ExamScreens.kt")
+_fsrc = load(_repo_root + "/app/src/main/java/com/drone/quiz/data/repo/OptionShuffle.kt")
+_rsrc = load(_repo_root + "/app/src/main/java/com/drone/quiz/data/repo/Repo.kt")
+
+if not _fsrc:
+    print("[FAIL] OptionShuffle.kt 缺失——模考选项打乱依赖它（视图/原始空间双射换算）")
+    fail = True
+else:
+    for _tok, _why in [
+        ("fun permOf", "排列生成"),
+        ("fun display", "显示空间重排"),
+        ("fun uaToOriginal", "显示→原始换算（落库/判分的唯一出口）"),
+        ("fun uaToDisplay", "原始→显示（已答高亮回显）"),
+        ("fun newSalt", "会话盐"),
+    ]:
+        if _tok not in _fsrc:
+            print(f"[FAIL] OptionShuffle 缺 {_tok}（{_why}）")
+            fail = True
+    # 判断题不打乱。判据是类型白名单而非"显式排除 JUDGE"：
+    # applicable 只放行 SINGLE/MULTI，JUDE 本就不在其中，行为已正确。
+    # 写死要求源码里出现 "QuestionTypes.JUDGE" 属于过度约束——
+    # 将来若合法地重写 applicable，代码没错而检查却报红，反而教人别改对的地方。
+    if "QuestionTypes.SINGLE" not in _fsrc or "QuestionTypes.MULTI" not in _fsrc:
+        print("[FAIL] OptionShuffle.applicable 须以类型白名单（single/multi）限定打乱范围，"
+              "判断题/填空/简答不得参与")
+        fail = True
+
+# 换算出口必须真的在作答回调里，且判分/落库用原始空间
+for _tok, _why in [
+    ("OptionShuffle.uaToOriginal(uaShownUp, rawQ, perm)", "作答回调必须先把显示空间换回原始空间"),
+    ("judgeAnswer(rawQ, ua)", "判分必须用原始题目 rawQ，不能用乱序后的显示题"),
+    ("saveExamAnswer(examId, rawQ.id, ua, correct)", "落库必须用原始题目 id"),
+    ("OptionShuffle.uaToDisplay(details[rawQ.id], rawQ, perm)", "已答高亮需把原始作答映射到显示位置"),
+    ("if (!hideExplanation) ParseBlock", "打乱生效时必须隐藏解析（否则解析里的原始字母与乱序选项对不上）"),
+]:
+    if _tok not in _osrc:
+        print(f"[FAIL] 模考选项打乱：{_why}（缺 {_tok}）")
+        fail = True
+
+# 即时判定与打乱必须解耦：不得出现「开打乱就强制关即时判定」的联动
+if "setExamInstantJudge(false)" in _osrc:
+    print("[FAIL] 打乱开关不得强制关闭即时判定——两者完全解耦，判定与正确答案照常，只隐藏解析文字")
+    fail = True
+
+# 盐要落库，否则进程重启后恢复考试会变成原序
+if "optSalt = if (shuffleOptions) OptionShuffle.newSalt() else 0L" not in _rsrc:
+    print("[FAIL] startExam 须把会话盐写入 exam_records.optSalt（恢复考试据此还原相同选项顺序）")
+    fail = True
+
+# 7.z2) 发展历程页（v2.19.34）
+#      数据表 AppHistory.kt 由 scripts/gen_history.py 从 git log 生成，
+#      若两者脱节，页面就会开始讲历史里没有的事——比不写还糟。
+#      static_check 无 git 环境时跳过比对（--check 单独在发版流程里跑）。
+_hsrc = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/HistoryScreen.kt")
+if not _hsrc:
+    print("[FAIL] HistoryScreen.kt 缺失——关于页「历程」入口会跳空")
+    fail = True
+else:
+    for _tok, _why in [
+        ("AppHistory.ALL", "时间轴数据源"),
+        ("HistoryScreen(backdrop: Backdrop", "须传 backdrop，否则玻璃卡没有折射层"),
+    ]:
+        if _tok not in _hsrc:
+            print(f"[FAIL] 发展历程页：{_why}（缺 {_tok}）")
+            fail = True
+_dsrc = load(_repo_root + "/app/src/main/java/com/drone/quiz/data/AppHistory.kt")
+if not _dsrc:
+    print("[FAIL] AppHistory.kt 缺失——请跑 python3 scripts/gen_history.py")
+    fail = True
+else:
+    # 单选正确答案只给字母（v2.19.34 用户反馈：选项已在上方摆着，不必再抄一遍选项全文）
+    _r2 = load(_repo_root + "/app/src/main/java/com/drone/quiz/data/repo/Repo.kt")
+    if "fun correctAnswerText(brief: Boolean = false)" not in _r2:
+        print("[FAIL] correctAnswerText 缺 brief 参数——判定区会继续把选项全文抄一遍")
+        fail = True
+    # 搜索页折叠态同样按 v2.19.36 用户反馈改成 brief（原先带选项全文，
+    # 重复抄一遍且把卡片横向撑高）。折叠态给字母 "正确答案：A" 作提示即可，
+    # 选项要点开才显示——不是"无从对照"，是"对照的东西在下面一层"。
+    _ss = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/SearchScreen.kt")
+    if "correctAnswerText(brief = true)" not in _ss:
+        print("[FAIL] 搜索页折叠态答案须用 brief=true（用户反馈：重复抄选项导致页面高度不断增加）")
+        fail = True
+
+# 7.z3) 模考抽题优先级（v2.19.35 错题优先）
+#      抽题在 startExam 里内联（要拿 DAO），单测复刻了同一套逻辑；
+#      两边若不一致，单测就锁不住真实行为——所以核对优先级顺序的关键标记。
+_r3 = load(_repo_root + "/app/src/main/java/com/drone/quiz/data/repo/Repo.kt")
+if not _r3:
+    print("[FAIL] Repo.kt 读不到")
+    fail = True
+else:
+    # 优先级必须严格是 错题 → 未答 → 其余；顺序反了就是行为回退
+    _i_wrong = _r3.find("for (pool in listOf(wrong, unseen, rest.toSet()))")
+    if _i_wrong < 0:
+        print("[FAIL] startExam 的逐级回填循环缺失或结构已变（期望 listOf(wrong, unseen, rest.toSet())）")
+        fail = True
+    # 错题本查询必须走 wDao（错题相关 DAO 挂在 WrongDao 上，用 qDao 编译不过，
+    # 但改成别的名字仍会静默拿到空集 —— 这条防的是后者）
+    if "wDao.activeWrongIds(bankId, type, null)" not in _r3:
+        print("[FAIL] 错题优先必须用 wDao.activeWrongIds 取题（错题查询在 WrongDao 上）")
+        fail = True
+    # removed=1 的不算错题（连续答够次数已毕业）
+    if "preferWrong: Boolean = false" not in _r3:
+        print("[FAIL] startExam 缺 preferWrong 参数（错题优先开关）")
+        fail = True
+# 两个优先级开关的说明文案须互不矛盾：错题开启时未答开关要说明自己在"补位"
+_e3 = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/ExamScreens.kt")
+if "preferWrong ->" not in _e3:
+    print("[FAIL] 模考配置页：错题优先开启时，「优先未答」的说明文案未切换为补位提示（用户会以为两个都抢第一）")
+    fail = True
+
+# 7.z4) 选项圆标居中 + 搜索页答案精简（v2.19.36）
+#      字母在圆圈里偏下的根因：Android 的 PlatformTextStyle.includeFontPadding
+#      默认给 Text 补上下行距，行盒比字号高，圆圈按行盒居中 → 字形视觉偏下。
+#      v2.19.16 在 QuestionBody 修过一次（lineHeight 收到同字号 + 关 fontPadding），
+#      搜索页那段是同一份代码的另一份拷贝，当时漏了——本次一并修并抽成共享字形。
+_ccc = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/common/QuestionBody.kt")
+_sc = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/SearchScreen.kt")
+_jg = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/common/JudgeGlyph.kt")
+_hs = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/HistoryScreen.kt")
+_hs_code = re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", _hs, flags=re.S))
+
+for _f, _src, _who in [("QuestionBody.kt", _ccc, "刷题"), ("SearchScreen.kt", _sc, "搜索页")]:
+    if "includeFontPadding = false" not in _src:
+        print(f"[FAIL] {_who}选项圆标的字母未关 includeFontPadding——字形在圆圈里会偏下（v2.19.16 修过一次，勿回退）")
+        fail = True
+if not _jg or "fun JudgeBadgeGlyph" not in _jg:
+    print("[FAIL] JudgeBadgeGlyph.kt 缺失——判断题圆标自绘字形的共用实现")
+    fail = True
+else:
+    for _f, _src, _who in [("QuestionBody.kt", _ccc, "刷题页"), ("SearchScreen.kt", _sc, "搜索页")]:
+        if "JudgeGlyph(" in _src.replace("JudgeBadgeGlyph(", ""):
+            print(f"[FAIL] {_who}仍在引用旧的私有 JudgeGlyph（应统一用 JudgeBadgeGlyph）")
+            fail = True
+
+# 搜索页折叠态：答案只给字母 + 限一行。原样带全文会重复抄选项并把卡片撑高。
+if "correctAnswerText(brief = true)" not in _sc:
+    print("[FAIL] 搜索页折叠态的答案须用 brief=true（用户反馈：重复抄选项导致页面高度不断增加）")
+    fail = True
+if "maxLines = 1, overflow = TextOverflow.Ellipsis,\n                    modifier = Modifier.weight(1f, fill = false)" not in _sc:
+    print("[FAIL] 搜索页折叠态答案须限一行（长选项文字会横向撑高卡片）")
+    fail = True
+
+# 历程页：节点去橙 + 展开动画 + 自动生成
+if _hs:
+    if "ui.accent" in _hs:
+        print("[FAIL] 历程页时间轴节点不要用 ui.accent 橙（用户反馈太跳，压过内容）")
+        fail = True
+    if "enter = expandVertically() + fadeIn()" not in _hs:
+        print("[FAIL] 历程页展开须有动画（须与错题本同款 expandVertically + fadeIn）")
+        fail = True
+_wf = load(_repo_root + "/.github/workflows/build.yml")
+if "python3 scripts/gen_history.py" not in _wf:
+    print("[FAIL] 发版 workflow 须自动重跑 gen_history.py（用户反馈：不要写死、要自动拉）")
+    fail = True
+elif "fetch-depth: 0" not in _wf:
+    print("[FAIL] 发版 workflow 的 checkout 须 fetch-depth: 0——默认浅克隆只有最后一个提交，历程会只剩一条")
+    fail = True
+
+# 7.z5) 时间轴竖线改用 drawBehind 画（v2.19.38）
+#      **前两版都错，且第二版引入了新 bug**——教训写在这里，免得第三次再犯：
+#      · v2.19.36 固定 24.dp        → 线长与卡片高度脱钩，断成一段段；
+#      · v2.19.37 IntrinsicSize.Min → 内在测量**不跟随 AnimatedVisibility 的尺寸动画**，
+#        收起展开的详情时条目留一大块空白、内容"啪"地跳回去，收起动画等于没有。
+#      根子是同一个：**用「测量」去驱动一条线**。测量是离散的、滞后于动画的，
+#      画线要的是「此刻真实布局尺寸」——那是 drawBehind 的 size，不是 Modifier 链。
+#      现：线在 Row 的 drawBehind 里画，Row 高度由卡片自然决定，size 即真值；
+#      且不参与测量，展开/收起动画恢复正常。
+_h2 = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/HistoryScreen.kt")
+if _h2:
+    for _tok, _why in [
+        (".drawBehind {", "竖线必须在 drawBehind 里画（拿真实布局高度）"),
+        ("start = Offset(x, nodeCY)", "线的起点须在本节点圆心（与上一段在圆心处衔接）"),
+        ("size.height + ROW_GAP.toPx() + nodeCY", "线的终点须跨过条目间距接到下一个节点圆心"),
+        ("isLast", "末条须特殊处理，否则列表末尾拖一条长尾"),
+    ]:
+        if _tok not in _h2:
+            print(f"[FAIL] 历程页时间轴：{_why}（缺 {_tok!r}）")
+            fail = True
+    # 绝不可再用「测量」驱动线。
+    #
+    # 注意必须**剔除注释行**再匹配：本文件上方的说明注释里就写着 "IntrinsicSize"
+    # 这几个字（要记录教训），按整文件子串匹配的话，检查会被自己的注释骗过——
+    # 实测注入 IntrinsicSize 后检查依然 PASS，形同虚设。
+    _h2_code = "\n".join(
+        ln for ln in _h2.split("\n") if not ln.strip().startswith(("//", "*", "/*"))
+    )
+    for _bad, _why in [
+        ("IntrinsicSize", "内在测量不跟随尺寸动画，会让展开/收起失去动画并留下空白"),
+        ("fillMaxHeight", "配合 IntrinsicSize 使用，同样滞后于动画"),
+    ]:
+        if _bad in _h2_code:
+            print(f"[FAIL] 历程页时间轴不得用 {_bad} 画线——{_why}（v2.19.36/37 连续两次踩坑）")
+            fail = True
+    # 竖线若又变成一个带权重的子 Box，说明退回"用测量驱动线"
+    if ".weight(1f)" in _h2_code and "Spacer(Modifier.weight(1f))" not in _h2_code:
+        print("[FAIL] 历程页竖线不得用 weight 撑高——weight 滞后于尺寸动画（须用 drawBehind）")
+        fail = True
+if "itemsIndexed" not in _h2:
+    print("[FAIL] 历程页须用 itemsIndexed——需要下标判断末条（isLast）")
+    fail = True
+
+# 考试顶栏三按钮须同高（v2.19.38）
+_ex = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/ExamScreens.kt")
+for _tok, _why in [
+    ("private val TOPBAR_BTN = 44.dp", "顶栏按钮尺寸须提为常量（原先 46/42/44 三值各写各的，肉眼可辨的胖）"),
+    ("sizeDp = TOPBAR_BTN", "Grid/Close 两个图标按钮须用统一尺寸"),
+    ("heightDp = TOPBAR_BTN", "交卷按钮须用统一尺寸"),
+]:
+    if _tok not in _ex:
+        print(f"[FAIL] 考试顶栏：{_why}（缺 {_tok!r}）")
+        fail = True
+if "sizeDp = 42.dp" in _ex:
+    print("[FAIL] 考试顶栏仍有写死的 42.dp 按钮（与 46/44 不齐，用户反馈『第一个胖胖的』）")
+    fail = True
+
+# ---- 收尾：必须在**所有**检查段之后 ----
+# 统计实际执行的检查段数（每段以 "if not" 或裸 if 判定失败，改为显式标记）
+_executed = sum(
+    1 for ln in open(__file__, encoding="utf-8").read().split("\n")
+    if ln.startswith("if ") and "_h2" in ln
+)
+
+
+# 7.z6) 搜索页逐条渐入 + 解析恒折叠（v2.19.39）
+#      用户口径：三件事并行（alpha 0→1 / blur 12→0 / translateY 归零），
+#      逐条从上往下错峰；解析无论卡片开合都保持折叠，由独立开关控制。
+#      blur 必须落在**外层 Box** 的 graphicsLayer 上而不是 GlassCard 本身——
+#      玻璃卡要用 drawBackdrop 采样背后内容做折射，若自身被 blur，
+#      折射源与渲染目标重叠，会边缘发虚/采样错位。
+_sc2 = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/SearchScreen.kt")
+for _tok, _why in [
+    ("itemsIndexed(results", "须按下标错峰，逐条渐入"),
+    ("Animatable(0f)", "进场进度须用 Animatable（延迟启动 + 可打断）"),
+    ("animateTo(", "渐入须有动画，瞬显无过渡"),
+    ("BlurEffect(", "须有「模糊→清晰」过程（用户口径）"),
+    ("TileMode.Clamp", "模糊边缘延展，避免卡片渐显时露出透明边"),
+    ("translationY", "须带轻微位移，纯淡入太单薄"),
+    # v2.19.40：搜索页解析不再有独立开关（随卡片展开），
+    # 折叠态由共用的 ParseBlock 内部负责。此处只查逐条渐入那三项。
+
+]:
+    if _tok not in _sc2:
+        print(f"[FAIL] 搜索页：{_why}（缺 {_tok!r}）")
+        fail = True
+
+# v2.19.40：搜索页解析随卡片展开（用户口径：统一，别搞独立开关），
+# 故此处**不再**检查二者是否解耦——那会逼着人把搜索页又拆出一套。
+# v2.19.40：搜索页回退为「解析随卡片展开、无独立按钮」（用户口径：
+# 「搜索页不需要搞这种解析展开或关闭…原来那个样式也是那样子的，
+#   这样子我们都统一一下，比较好管理」）。
+# 所以提示文案**应当**含「与解析」——它随卡片一起展开，是卡片内容之一。
+if "点开查看全部选项" not in _sc2:
+    print("[FAIL] 搜索页折叠提示文案缺失")
+    fail = True
+if "explanationOpen" in _sc2:
+    print("[FAIL] 搜索页不该再有解析的独立开关（v2.19.40 已收回，解析统一走 ParseBlock）")
+    fail = True
+
+# 7.z7) 解析组件统一（v2.19.40）
+#      用户反馈：「无论考试还是刷题，解析仍然是默认展开的，没看到折叠功能」。
+#      病灶：v2.19.39 我只改了搜索页（给它加了个独立开关），
+#      而刷题四类题 + 模考 + 错题本共五处仍沿用「判定即摊开解析」的旧写法——
+#      用户看到的就是「没变化」。六处各画各的，加折叠开关要改六遍、极易漏。
+#      现收敛到**唯一**的 ParseBlock（QuestionBody.kt）：默认折叠 + 逐字揭示，
+#      六处调用点全部走它。想改解析观感只改这一处。
+#
+#      搜索页显式传 autoOpen=true（解析随卡片展开、无独立按钮），
+#      其余五处用默认折叠态。
+_qb3 = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/common/QuestionBody.kt")
+for _tok, _why in [
+    ("autoOpen: Boolean = false",
+     "ParseBlock 须有 autoOpen 参数且默认 false（搜索页解析随卡片展开，不需要独立按钮）"),
+    ("mutableStateOf(autoOpen)",
+     "解析须默认折叠（用户口径：无论考试还是刷题都不该默认摊开）"),
+    ("查看解析", "折叠态须有可点的展开入口"),
+    # ── v2.19.42 用户回归：容器暴涨 + 吐字抖动 + 看不到对焦效果 ──
+    # 旧实现把每个字做成独立 Text 节点竖排（每字一行 → 高度暴涨），
+    # 且在组合期读 System.currentTimeMillis()（非状态驱动 → 抖动）。
+    # 以下检查锚定的是**结构性不变量**，不是可被重命名骗过去的字符串。
+    ("REVEAL_CPS = 67f", "逐字揭示速度须为 67 字/秒（用户三次嫌慢，20→36→56→67）"),
+    ("ENTRY_MS = 340f", "单字入场须为 340ms（用户要求渐显/模糊周期更长）"),
+    ("BLUR_PX = 6.5f", "起始模糊须为 6.5px——3px 只有字高的 11%，肉眼无感"),
+    # v2.19.49：模糊曲线从 (1-p)^2 换成 1-p^0.55。
+    # 旧曲线是急减速，模糊在「字看得见」之前就烧完了（p=0.5 时仅剩 0.75px），
+    # 用户反馈「模糊感觉不明显」正源于此。换慢启动曲线让模糊覆盖可见区间。
+    ("private fun blurOf(p: Float)", "须有独立的模糊衰减曲线"),
+    ("1f - t.pow(0.55f)", "模糊曲线必须是慢启动的 1-p^0.55，而不是 (1-p)^2 急减速"),
+    ("renderEffect = if (blur > 1f)", "模糊阈值取 1px：更低肉眼无感却仍占 RenderEffect 图层"),
+    # v2.19.47 纵向对齐：占位框必须与单字**自然盒子**重合。
+    # 用 lineHeight 撑高的占位框 + TextCenter 对齐，会让字整体下沉一个 descent
+    # （用户截图：动画中的字与前后静止字不在一条基线上）。
+    ("charStyle = remember(style) { style.copy(lineHeight = TextUnit.Unspecified) }",
+     "占位框须用不带 lineHeight 的 charStyle 测量，否则基线会整体下沉"),
+    ("placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter",
+     "占位框垂直对齐方式"),
+    ("BlurEffect(blur, blur, TileMode.Clamp)", "逐字模糊须用 BlurEffect"),
+    ("arrivalOf", "须按逐字到达时刻推进，而非一次性全出"),
+    ("withFrameNanos", "动画时钟须由帧回调驱动；组合期读 System.currentTimeMillis 会导致抖动"),
+    # ── v2.19.46：定位方式换了，这条是重点 ──
+    # v2.19.42 把每个字做成独立 Text 再 offset 到「它在全文排版里的位置」，
+    # 结果字距忽宽忽窄、同一行高低错落、甚至跳字（用户实机：「同一行不在一行里面」）。
+    # 现在整段用**同一个 Text 节点**，只有正在入场的字经 InlineTextContent 挂
+    # 各自的 alpha/blur，排版位置交给 Compose 自己算。
+    ("appendInlineContent", "尾段字必须走 InlineTextContent，让排版位置由 Compose 计算"),
+    ("Placeholder(", "InlineTextContent 的占位宽度必须显式给出"),
+    ("rememberTextMeasurer", "占位宽度须用 TextMeasurer 实测，否则字距会错"),
+    ("inlineContent = inlineContent", "Text 必须接收 inlineContent map"),
+]:
+    if _tok not in _qb3:
+        print("[FAIL] 解析组件：%s（缺 %r）" % (_why, _tok))
+        fail = True
+
+# 反向禁令：绝不能退回「逐字独立 Text 节点 + 手工 offset 定位」。
+# 注意先剥掉块注释与行注释——本文件在注释里复述旧写法（写清「为什么不能那么做」），
+# 按原文匹配会把注释自己判成违规。
+_qb3_code = re.sub(r"/\*.*?\*/", "", _qb3, flags=re.S)
+_qb3_code = re.sub(r"//[^\n]*", "", _qb3_code)
+for _bad, _why in [
+    ("val ch in tail", "不得把每个字做成独立 Text 节点（每字一行 → 高度暴涨 / 排版错乱）"),
+    ("getHorizontalPosition(i", "不得用 getHorizontalPosition + offset 手工定位单字；"
+                                "那是 v2.19.42 字距错乱与跳字的根因"),
+    ("Modifier.offset { IntOffset", "不得用 offset 摆放单字，排版位置必须由 Compose 文本布局给出"),
+]:
+    if _bad in _qb3_code:
+        print("[FAIL] 解析组件：%s（出现 %r）" % (_why, _bad))
+        fail = True
+
+# 时间轴竖线必须接到下一个节点（用户 v2.19.46 反馈：线还是没连上）
+_hs = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/HistoryScreen.kt")
+for _tok, _why in [
+    ("ROW_GAP", "时间轴条目间距须有具名常量，竖线要跨过它才能接上下一节点"),
+    ("size.height + ROW_GAP.toPx() + nodeCY",
+     "竖线终点须画到**下一个节点的圆心**；只画到本条目底部会在节点之间断开"),
+    ("start = Offset(x, nodeCY)", "竖线须从本节点圆心起算，与上一段在圆心处衔接"),
+]:
+    if _tok not in _hs:
+        print("[FAIL] 历程页时间轴：%s（缺 %r）" % (_why, _tok))
+        fail = True
+if "LINE_OVER" in _hs_code:
+    print("[FAIL] 历程页时间轴：LINE_OVER 已废弃（线只探出 10dp，接不到下一节点）")
+    fail = True
+
+# 标题行合并：解析 / 查看解析 / 收起 必须同一行（用户 v2.19.42 明确要求）
+if 'if (open) "收起" else "查看解析"' not in _qb3:
+    print("[FAIL] 解析组件：标题行须合并为一行，右侧在「查看解析」/「收起」间切换")
+    fail = True
+
+# 六处调用点：不得再有自己画解析的（说明又分叉了）
+for _f, _min in [
+    ("screens/PracticeScreen.kt", 4),
+    ("screens/ExamScreens.kt", 1),
+    ("screens/SearchScreen.kt", 1),
+]:
+    _src = load(_repo_root + "/app/src/main/java/com/drone/quiz/" + _f)
+    _n = _src.count("ParseBlock(")
+    if _n < _min:
+        print("[FAIL] %s 应经由共用的 ParseBlock 渲染解析（找到 %d 处，少于 %d）——"
+              "各页自己画解析会再次分叉" % (_f, _n, _min))
+        fail = True
+    if "Text(q.explanation," in _src:
+        print("[FAIL] %s 仍有直接渲染解析正文的写法，应改走 ParseBlock" % _f)
+        fail = True
+
+# 7.z8) 模考设置记忆 + 产品发布页（v2.19.41）
+#      用户反馈两件事：
+#      ① 模考设置「每一次都要自己手动再设置一遍」。病灶不是没存——开考时一直
+#      有 setExamQuickConfig（快捷方式「快速模考」就靠它），而是**配置页从不读它**：
+#      count/durationMin/judgeRatio/ratios 四个 state 是硬编码初值，开关却走
+#      st.* 有持久化，于是表现为「开关记住了、滑杆没记住」。
+#      ② 产品发布页。零成本方案 = GitHub Pages 托管 site/ 下的静态页，
+#      下载用**不带版本号的固定名资产** releases/latest/download/TiYu-latest.apk
+#      —— 那个 URL 永远指向最新正式版，页面不必跟着版本号改。
+_es = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/ExamScreens.kt")
+for _tok, _why in [
+    ("ServiceLocator.settings.examQuickConfig()", "配置页须读回已存配置（否则「每次重设」）"),
+    # v2.19.47：用户明确要求**去掉**这条提示——设置记忆是默认行为，
+    # 多此一举地播报反而让人以为「现在还是默认值」而手动再调一遍。
+    # 改为反向检查：出现 restoredFrom 即视为回归。
+    ("恢复默认", "须提供「恢复默认」出口，否则记忆后想改回去只能清数据"),
+    ("fixRatiosRoundOff", "counts 反推比例会掉零头，须归一化回 100"),
+]:
+    if _tok not in _es:
+        print("[FAIL] 模考设置记忆：%s（缺 %r）" % (_why, _tok))
+        fail = True
+
+_site = load(_repo_root + "/site/index.html")
+if not _site:
+    print("[FAIL] site/index.html 缺失——产品发布页没了")
+    fail = True
+else:
+    for _tok, _why in [
+        ("TiYu-latest.apk", "下载须用固定名资产的直链（带版本号的 URL 每次发版都要改）"),
+        ("releases/latest", "须读取最新版本号并显示在页面上"),
+        ("常见问题", "用户明确要求有 Q&A"),
+    ]:
+        if _tok not in _site:
+            print("[FAIL] 产品发布页：%s（缺 %r）" % (_why, _tok))
+            fail = True
+    if "<script src=" in _site:
+        print("[FAIL] 产品发布页不应有外部脚本依赖——静态页要能离线/受限网络打开")
+        fail = True
+
+_wf3 = load(_repo_root + "/.github/workflows/build.yml")
+if "TiYu-latest.apk" not in _wf3:
+    print("[FAIL] 发版须额外产出固定名资产 TiYu-latest.apk（否则页面直链 404）")
+    fail = True
+if "Deploy product site" in _wf3 and "git subtree split --prefix=site" not in _wf3:
+    print("[FAIL] 发版须把 site/ 推到 gh-pages（仓库 Pages 已开通为 legacy+分支模式）")
+    fail = True
+if "actions/upload-pages-artifact" in _wf3:
+    print("[FAIL] Pages 部署须用 gh-pages 分支方式——仓库已开通 legacy 模式，"
+          "混用 Actions 环境会互相打架")
+    fail = True
+
+_au = load(_repo_root + "/app/src/main/java/com/drone/quiz/util/AppUpdater.kt")
+if "SITE_URL" not in _au:
+    print("[FAIL] App 内「GitHub 发布页」须改指产品页（用户口径）")
+    fail = True
+if "https://dadaluo.github.io/TiYu/" not in _au:
+    print("[FAIL] SITE_URL 须指向 GitHub Pages 地址")
+    fail = True
+if "RELEASES_URL" not in _au:
+    print("[FAIL] 须保留 RELEASES_URL 作为 Pages 不可用时的兜底")
+    fail = True
+
+# ============================================================
+# 收尾（**唯一**出口）
+#
+# 这段曾经被踩坑四次（v2.19.34 / 37 / 38 / 39）：每次都把新检查段"追加到文件
+# 末尾"，而本收尾早在第 715 行就 sys.exit 了——追加的检查从头到尾没执行过，
+# 表现为"检查写完了但永远 PASS"，注入已知回退也测不出来。
+#
+# 根治：下面这个哨兵会在**每次运行**时检查自己是否真的在文件末尾。
+# 只要有人在 sys.exit 之后再追加内容，哨兵就移到最末把那段包进来。
+# 新增检查段照旧追加到「本段之前」即可，不必再关心出口位置。
+#
+# ── 模考设置记忆（v2.19.47）─────────────────────────────────────
+# 用户实机：判断题占比 30%→20%，杀 App 重进又变 30%。三个叠加的 bug：
+#   ① 存的是 counts（被题库裁剪过的题数），不是用户意图 → 反推必然失真
+#   ② judgeRatio 从来没被回填，它一直是硬编码 0.3f
+#   ③ 回填完立刻被下面两行无条件覆盖（v2.19.41 引入时留下）
+_es = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/ExamScreens.kt")
+_sstore = load(_repo_root + "/app/src/main/java/com/drone/quiz/data/settings/SettingsStore.kt")
+for _tok, _why in [
+    ("val judgeRatio: Float = 0.3f",
+     "ExamQuickConfig 必须存用户意图 judgeRatio，不能只存 counts"),
+    ("val manualRatios: Map<String, Int> = emptyMap()",
+     "须存手动模式下的各题型比例"),
+    ("val autoMix: Boolean = true",
+     "须存自动配比开关"),
+]:
+    if _tok not in _sstore:
+        print("[FAIL] 模考设置记忆：%s（SettingsStore 缺 %r）" % (_why, _tok))
+        fail = True
+
+_es_code = re.sub(r"/\*.*?\*/", "", _es, flags=re.S)
+_es_code = re.sub(r"//[^\n]*", "", _es_code)
+for _tok, _why in [
+    ("judgeRatio = qc.judgeRatio",
+     "回填时必须恢复 judgeRatio，否则滑杆永远停在硬编码默认值"),
+    ("if (!restored) {",
+     "自动配比只能在「没有可恢复配置」时兜底；无条件执行会把刚恢复的值冲掉"),
+    ("judgeRatio = judgeRatio,",
+     "保存时必须带上 judgeRatio"),
+    ("manualRatios = ratios,",
+     "保存时必须带上手动比例"),
+]:
+    if _tok not in _es_code:
+        print("[FAIL] 模考设置记忆：%s（缺 %r）" % (_why, _tok))
+        fail = True
+
+# 「已沿用上次的设置 / 恢复默认」提示已按用户要求移除。
+# 同样要剥离注释——上面那段说明性注释里就写着这两个词。
+_es_ui = re.sub(r"/\*.*?\*/", "", _es, flags=re.S)
+_es_ui = re.sub(r"//[^\n]*", "", _es_ui)
+for _gone, _why in [
+    ("已沿用上次的设置", "用户要求去掉这句提示：设置记忆是默认行为，不必播报"),
+    ("恢复默认", "用户要求去掉「恢复默认」入口"),
+]:
+    if _gone in _es_ui:
+        print("[FAIL] 模考设置记忆：不该再显示 %r（%s）" % (_gone, _why))
+        fail = True
+
+# ── 通过率的模型（v2.19.51）─────────────────────────────────────
+# 用户实机：「及格 60 给我报 100% 我相信，但调到 95 还是 81%。
+#           我最高就考到 86，没到过 90 分往上。」
+#
+# 病灶：`estimate = ability / pass` 是「能力 ÷ 及格线」的**比值**，不是概率。
+# 后果是**及格线越高、通过率反而越接近 1**——82 分能力、95 分及格报 86%。
+# 差 0.001 和差 0.10 报出来的数字几乎一样，因为它压根不在回答「能不能过」，
+# 只是把「离及格线还有多远」除了一下。
+#
+# 正确模型：通过率 = Φ((能力 − 及格线) / σ)，σ 是单次考试发挥的波动。
+_pe = load(_repo_root + "/app/src/main/java/com/drone/quiz/data/PassEstimate.kt")
+_pe_code = re.sub(r"/\*.*?\*/", "", _pe, flags=re.S)
+_pe_code = re.sub(r"//[^\n]*", "", _pe_code)
+for _tok, _why in [
+    ("fun normalCdf(", "须有标准正态 CDF：通过率是概率，不能用比值"),
+    ("fun estimateSigma(", "须从用户自己的成绩估计考试波动 σ"),
+    ("val z = (ability - pass) / sigma", "通过率必须是 Φ((能力−及格线)/σ)"),
+    ("const val SIGMA_DEFAULT", "σ 缺样本时须有默认值"),
+    ("SIGMA_PRIOR_N", "σ 的估计须向默认值收缩（两场分数不足以代表波动）"),
+    ("const val SIGMA_MIN", "σ 须有下界：再稳也不该零波动"),
+    ("const val SIGMA_MAX", "σ 须有上界：再飘也不该离谱"),
+]:
+    if _tok not in _pe_code:
+        print("[FAIL] 通过率模型：%s（缺 %r）" % (_why, _tok))
+        fail = True
+
+for _bad, _why in [
+    ("(ability / pass)", "不得再用量 ÷ 及格线的比值当通过率"),
+    ("(correctW / totalW)", "注意这个是收缩公式的退化形态，需连同 prior 一起检查"),
+]:
+    if _bad in _pe_code:
+        if _bad == "(correctW / totalW)" and "prior" in _pe_code and "PRIOR_STRENGTH" in _pe_code:
+            continue          # 收缩仍然健在，误报
+        print("[FAIL] 通过率模型：%s（出现 %r）" % (_why, _bad))
+        fail = True
+
+# ── 首页图表卡的模式切换（v2.19.50）─────────────────────────────
+# 用户反馈：图表卡上那个「本题库」标签多余——但这卡的数据本来就按题库隔离，
+# 切到哪个库它都写着「本题库」，等于一句废话。要求换成练习/模考两种模式的切换，
+# 且**不创作新图表**，直接把现有的七天练习图切过去。
+_hm = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/HomeScreen.kt")
+_hm_code = re.sub(r"/\*.*?\*/", "", _hm, flags=re.S)
+_hm_code = re.sub(r"//[^\n]*", "", _hm_code)
+for _tok, _why in [
+    ("data class ChartPoint", "图表必须泛化成通用数据点，否则两种模式得各画一份"),
+    ("fun Chart(", "必须有通用的 Chart 组件"),
+    ("fun List<Repo.DayStat>.toChartPoints()", "七天练习需转成 ChartPoint"),
+    # 关键：要验证它**被调用**，而不只是定义了——定义留着不调用，
+    # 就等于「两种模式各画一份」，正是用户明确不要的。
+    ("stats.exams.toExamChartPoints()", "模考数据必须真的喂给 ChartPoint（共用同一张图）"),
+    ("stats.days.toChartPoints()", "七天练习数据必须真的喂给 ChartPoint"),
+    ("private fun ChartModeSwitch", "必须有模式切换控件"),
+    ('if (examMode) "模考走势" else "近 7 天练习"', "标题须随模式切换"),
+    ('if (examMode) " 得分  " else " 题量  "', "图例的柱含义须随模式切换"),
+]:
+    if _tok not in _hm_code:
+        print("[FAIL] 首页图表：%s（缺 %r）" % (_why, _tok))
+        fail = True
+
+# 「本题库」那个恒为真的话的标签不得复活
+if '"本题库"' in _hm_code:
+    print("[FAIL] 首页图表：不得再显示「本题库」标签（数据本就按题库隔离，等于废话）")
+    fail = True
+
+# ── 预估通过率（v2.19.48）────────────────────────────────────────
+# 旧算法只有一行：累计刷题正确率 ÷ 及格分，再和「刷题覆盖率」三七分。
+# 五个问题都在那一行里，其中两个直接违背用户口径：
+#   · **压根没引用模考成绩** —— 模考有倒计时、有完整流程，是最接近考试的信号
+#   · **「刷了多少题」占 30% 权重** —— 练得多不等于练得好
+#   · **每题一票** —— 考 10 道题和考 100 道题对数字影响一样大
+#   · **不分题型** —— 把判断题占比调高去刷分会跟着涨
+#   · **无时间衰减**
+_hz = load(_repo_root + "/app/src/main/java/com/drone/quiz/data/PassEstimate.kt")
+for _tok, _why in [
+    ("const val PRIOR_STRENGTH", "必须有先验强度：样本少时向先验收缩，不给极端值"),
+    ("const val PRACTICE_WEIGHT", "刷题必须折权（无时间压力，证据力弱一档）"),
+    ("const val PRACTICE_CAP", "刷题证据必须封顶，否则会把模考信号淹没"),
+    ("const val HALF_LIFE_DAYS", "必须有时间衰减：半衰期前的模考权重减半"),
+    ("bankTypeMix", "必须按题型校正：按题库真实配比加权，而非按某次模考的配比"),
+    ("answered * w", "模考权重必须 ∝ 实际作答题数（题少的那场自然就轻）"),
+    ("正确率", "副标题须把估计依据讲给用户"),
+]:
+    if _tok not in _hz:
+        print("[FAIL] 预估通过率：%s（缺 %r）" % (_why, _tok))
+        fail = True
+
+_hz_code = re.sub(r"/\*.*?\*/", "", _hz, flags=re.S)
+_hz_code = re.sub(r"//[^\n]*", "", _hz_code)
+for _bad, _why in [
+    ("coverage * 0.3f", "不得再给「刷题覆盖率」加权：练得多不等于练得好"),
+]:
+    if _bad in _hz_code:
+        print("[FAIL] 预估通过率：%s（出现 %r）" % (_why, _bad))
+        fail = True
+
+# 首页必须接新算法，而不是那一行旧式
+_home = load(_repo_root + "/app/src/main/java/com/drone/quiz/screens/HomeScreen.kt")
+_home_code = re.sub(r"/\*.*?\*/", "", _home, flags=re.S)
+_home_code = re.sub(r"//[^\n]*", "", _home_code)
+if "PassEstimate.compute(" not in _home_code:
+    print("[FAIL] 首页：预估通过率必须走 PassEstimate.compute，不能用旧的一行式")
+    fail = True
+if "stats.accuracy / (settings.passScore" in _home_code:
+    print("[FAIL] 首页：旧的一行式（stats.accuracy / passScore）不得复活")
+    fail = True
+if "r.basis(settings.passScore)" not in _home:
+    print("[FAIL] 首页：须展示估计依据（basis），别给一个凭空而来的百分数")
+    fail = True
+
+# ── 产品页 site/（v2.19.43）────────────────────────────────────
+# 站点返工过两次，都是「编译通过、静态检查通过、肉眼一眼假」的问题：
+#   ① <img> 的 HTML width/height 会映射成**表现层尺寸**；CSS 只写 width:100%
+#      而漏 height:auto，图片被钉在属性高度上纵向拉长——当时 hero 与故事区的
+#      手机模型全被拉成 3 倍高。只能靠真机渲染发现。
+#   ② 版本号靠 fetch 跨域读 github.com —— GitHub 的 HTML 页不带
+#      Access-Control-Allow-Origin，浏览器按 CORS 拦掉，版本号永远读不到。
+_site = load(_repo_root + "/site/index.html")
+for _tok, _why in [
+    ("img{max-width:100%;height:auto;display:block}",
+     "全局 img 必须显式 height:auto，否则 HTML height 属性会把图纵向拉长"),
+    (".phone img{width:100%;height:auto",
+     "hero 手机模型的图片必须 height:auto"),
+    (".shot .frame img{border-radius:33px;width:100%;height:auto}",
+     "截图故事区的手机框图片必须 height:auto"),
+    ("fetch('version.json'",
+     "版本号必须读同源 version.json；跨域 fetch github.com 会被 CORS 拦掉"),
+    ("TiYu-latest.apk",
+     "下载按钮须指向固定名资产，外部链接才不用跟版本号改"),
+    ('<meta property="og:image" content="img/og.jpg">', "须有分享卡片图"),
+    ("Apache-2.0", "须声明开源许可"),
+    ("版权归原始题库编制方所有", "必须保留题库版权声明（题库不在开源授权范围内）"),
+    ("@keyframes bob{0%,100%{transform:translateY(0)}",
+     "手机浮动动画必须走 transform；写在 margin-bottom 上会参与布局，"
+     "页面总高度周期性变化，内容会顶着人跳（v2.19.46 实测）"),
+    ('<img src="img/icon-192.png" alt="题屿 TiYu 应用图标"',
+     "hero 必须放 App 图标"),
+    ('<img class="mark img" src="img/icon-192.png"',
+     "导航必须用 App 图标作品牌标"),
+    ('rel="apple-touch-icon" href="img/apple-touch-icon.png"',
+     "须提供 apple-touch-icon（iOS 加到主屏用）"),
+]:
+    if _tok not in _site:
+        print("[FAIL] 产品页：%s（缺 %r）" % (_why, _tok))
+        fail = True
+
+for _bad, _why in [
+    ("releases/latest`", "不得跨域 fetch github.com 取版本号（CORS 会被浏览器拦掉）"),
+]:
+    if _bad in _site:
+        print("[FAIL] 产品页：%s（出现 %r）" % (_why, _bad))
+        fail = True
+
+# 截图必须在且非空占位
+for _img in ["home.jpg", "practice.jpg", "exam.jpg", "og.jpg"]:
+    _p = _repo_root + "/site/img/" + _img
+    if not os.path.isfile(_p) or os.path.getsize(_p) < 4096:
+        print("[FAIL] 产品页：缺截图或文件过小 site/img/%s" % _img)
+        fail = True
+
+# ── 产品页的可玩 demo（v2.19.44）────────────────────────────────
+# 页面上那道题是**原题原解析**，直接取自 assets/questions.json。
+# 手抄进 HTML 时很容易顺手"润色"——加引号、删一句、改标点——
+# 那就等于篡改题库内容。已发生过一次（给 A项加了引号、漏抄了末句）。
+# 所以这里逐字比对，抄错即失败。
+_bank = json.load(open(_repo_root + "/app/src/main/assets/questions.json", encoding="utf-8"))
+_qs = _bank if isinstance(_bank, list) else _bank.get("questions", [])
+_byid = {}
+for _q in _qs:
+    _byid.setdefault(str(_q.get("id")), []).append(_q)
+
+_siteblk = _site[_site.index("const BANK = ["):_site.index("nEl.onclick")] \
+    if "const BANK = [" in _site else ""
+_demo_ids = re.findall(r"\{ id:(\d+),", _siteblk)
+if not _demo_ids:
+    print("[FAIL] 产品页 demo：找不到题目数据块（BANK）")
+    fail = True
+for _qid in _demo_ids:
+    _src = _byid.get(_qid)
+    if not _src:
+        print("[FAIL] 产品页 demo：题库中不存在 id=%s" % _qid)
+        fail = True
+        continue
+    _q = _src[0]
+    _exp = _q.get("explanation", "")
+    if _exp and _exp not in _siteblk:
+        # 定位第一处差异，便于排查
+        _m = re.search(r"id=" + re.escape(_qid) + r".*?e:'([^']*)'", _siteblk, re.S)
+        _got = _m.group(1) if _m else ""
+        _at = next((k for k in range(min(len(_exp), len(_got))) if _exp[k] != _got[k]), None)
+        _ctx = ""
+        if _at is not None:
+            _ctx = "（首个差异 @%d：原文…%s… 页面…%s…）" % (
+                _at, _exp[max(0, _at - 12):_at + 12], _got[max(0, _at - 12):_at + 12])
+        print("[FAIL] 产品页 demo：id=%s 的解析与题库不一致%s" % (_qid, _ctx))
+        fail = True
+    for _o in _q.get("options", []):
+        if _o not in _siteblk:
+            print("[FAIL] 产品页 demo：id=%s 的选项 %r 与题库不一致" % (_qid, _o))
+            fail = True
+
+# demo 的揭示动画参数须与 App 内 ParseBlock **完全一致**。
+# 这里不再硬编码期望值，而是直接从 App 源码里把三个常量读出来再比对 ——
+# v2.19.47 之前是写死 "CPS = 36"，结果调速度时忘了同步检查，
+# 连续第三次出现「改了一处忘了另一处」。改成源头读取，两端再也分不开。
+_app_src = _qb3
+for _name, _pat, _unit, _why in [
+    ("CPS",    r"REVEAL_CPS\s*=\s*([\d.]+)f",  "f", "逐字速度"),
+    ("ENTRY",  r"ENTRY_MS\s*=\s*([\d.]+)f",    "f", "单字入场时长"),
+    ("BLUR",   r"BLUR_PX\s*=\s*([\d.]+)f",     "f", "起始模糊"),
+]:
+    _m = re.search(_pat, _app_src)
+    if not _m:
+        print("[FAIL] 产品页 demo：无法从 App 源码读到 %s（%s）" % (_name, _why))
+        fail = True
+        continue
+    _v = _m.group(1)
+    if _name == "CPS":
+        _c = re.search(r"const CPS = ([\d.]+), ENTRY", _site)
+        if not _c or abs(float(_c.group(1)) - float(_v)) > 0.01:
+            print("[FAIL] 产品页 demo：CPS 与 App 的 REVEAL_CPS 不一致（App=%s Page=%s）"
+                  % (_v, _c.group(1) if _c else "缺失"))
+            fail = True
+    elif _name == "ENTRY":
+        _e = re.search(r"const CPS = [\d.]+, ENTRY = (\d+), BLUR = [\d.]+;", _site)
+        if not _e or abs(float(_e.group(1)) - float(_v)) > 0.01:
+            print("[FAIL] 产品页 demo：ENTRY 与 App 的 ENTRY_MS 不一致（App=%s Page=%s）"
+                  % (_v, _e.group(1) if _e else "缺失"))
+            fail = True
+    else:
+        _b = re.search(r"const CPS = [\d.]+, ENTRY = \d+, BLUR = ([\d.]+);", _site)
+        if not _b or abs(float(_b.group(1)) - float(_v)) > 0.01:
+            print("[FAIL] 产品页 demo：BLUR 与 App 的 BLUR_PX 不一致（App=%s Page=%s）"
+                  % (_v, _b.group(1) if _b else "缺失"))
+            fail = True
+
+# WAAPI 必须 fill:'both'
+if "fill:'both'" not in _site:
+    print("[FAIL] 产品页 demo：WAAPI 必须 fill:'both'；'backwards' 会让动画结束后回落到 "
+          "opacity:0，整段解析永远看不见")
+    fail = True
+# 模糊曲线与 App 一致：慢启动的 1-p^0.55（关键帧近似），
+# 74% 之后归零 —— 那时 blur 已不足 1px，与 App 侧的 1.0px 阈值等效。
+for _tok, _why in [
+    ("Math.pow(Math.max(0, Math.min(1, p)), 0.55)",
+     "demo 的模糊曲线须与 App 的 blurOf 同一套（1-p^0.55）"),
+    ("offset:0.74, filter:'blur(0px)'",
+     "74% 之后须归零，等效于 App 侧的 1.0px 阈值，省掉无意义的滤镜图层"),
+]:
+    if _tok not in _site:
+        print("[FAIL] 产品页 demo：%s（缺 %r）" % (_why, _tok))
+        fail = True
+    if _tok not in _site:
+        print("[FAIL] 产品页 demo：%s（缺 %r）" % (_why, _tok))
+        fail = True
+
+def _fn_body(src, sig):
+    """取出某个顶层 Composable/函数从签名到其**顶格**右花括号之间的正文。
+
+    不能找 '\n}\n'——函数体内每个嵌套 lambda / if 都会先撞上，
+    切出来的片段根本不完整，后面的 index 比较全都会误判。
+    """
+    i = src.index(sig)
+    j = src.index("\n}\n", i)
+    # 剥掉注释再返回：否则注释里出现的「你的回答」「解析图片」等字样
+    # 会被下面的 index 比较当成真实代码命中（自身就把自己判失败）。
+    body = src[i:j]
+    body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+    body = re.sub(r"//[^\n]*", "", body)
+    return body
+
+
+# ── 解析图片 / 答案图（v2.19.52 / v2.19.53）──────────────────────────
+# 作图题的答案本身就是一张图。它必须出现在**作答前看不见**的位置：
+#   · ShortReferenceCard（参考答案框）—— 只在提交后渲染 ✓
+#   · 不能放 ParseBlock 里 —— 解析一展开就跟着图，且逐字浮现的文字会叠图
+#   · 更不能放「图片」列 —— 显示在题干下方，作答前就剧透
+_qf = load("app/src/main/java/com/drone/quiz/data/repo/QuestionFormats.kt")
+_rp = load("app/src/main/java/com/drone/quiz/data/repo/Repo.kt")
+_qb = load("app/src/main/java/com/drone/quiz/screens/common/QuestionBody.kt")
+_bi = load("app/src/main/java/com/drone/quiz/screens/BankImportSheet.kt")
+
+# 1) CSV 里「解析图片」列必须与题目图列分开存在
+if "解析图片" not in _qf:
+    print("[FAIL] 答案图：CSV 里没有「解析图片」列的识别（作图题的答案图无处安放）")
+    fail = True
+
+# 2) 落盘必须同时包含题目图与解析图。
+#    只落题目图 = 解析图在 App 里永远加载不出来（这正是 v2.19.52 修掉的 bug）。
+if "it.images + it.explanationImages" not in _rp:
+    print("[FAIL] 答案图：importParsedBank 落盘时必须带上 explanationImages，"
+          "否则解析图不会写进 bank_images/<bankId>/，展开解析是空图")
+    fail = True
+
+# 3) 数据库必须有该列 + 迁移（改表必须递增 version 并加 MIGRATION）
+_ent = load("app/src/main/java/com/drone/quiz/data/db/Entities.kt")
+_db = load("app/src/main/java/com/drone/quiz/data/db/AppDatabase.kt")
+if "explanationImages" not in _ent:
+    print("[FAIL] 答案图：QuestionEntity 缺 explanationImages 列")
+    fail = True
+if "MIGRATION_5_6" not in _db or "version = 6" not in _db:
+    print("[FAIL] 答案图：缺 MIGRATION_5_6 或 DB version 未升到 6")
+    fail = True
+if "explanationImages" not in _db:
+    print("[FAIL] 答案图：迁移里没有 ALTER TABLE 加 explanationImages 列")
+    fail = True
+
+# 4) 答案图渲染在 ShortReferenceCard，且在「你的回答」之上
+if "referenceImages: List<String> = emptyList()" not in _qb:
+    print("[FAIL] 答案图：ShortReferenceCard 缺 referenceImages 参数")
+    fail = True
+_rc = _fn_body(_qb, "fun ShortReferenceCard(")
+if "ExpandableQuestionImage" not in _rc:
+    print("[FAIL] 答案图：ShortReferenceCard 内没有渲染图片")
+    fail = True
+if _rc.index("ExpandableQuestionImage") > _rc.index("你的回答"):
+    print("[FAIL] 答案图：图须排在「你的回答」之上（用户口径：紧跟参考答案文字，"
+          "在作答记录下面）")
+    fail = True
+# 4b) 「见解析图」文字与图必须合成**同一个块**（v2.19.53 用户口径：
+#     「把图片放在见解析图同一个块里面去」）。裸图贴在文字下面会被看成
+#     两样不相干的东西，必须有容器把文字+图圈成一个整体。
+#     注意不能用「函数体里有没有 RoundedCornerShape(12.dp)」来判——同一函数内
+#     「答对了/答错了」按钮也用 12dp 圆角，去掉容器照样命中，守卫就成了摆设。
+#     正确的判据：reference 文本**自身**被 clip+background+border 包着。
+_ri = _rc.index("ExpandableQuestionImage")
+_ref_txt = _rc.rfind("reference,", 0, _ri)
+_head = _rc[max(0, _ref_txt - 800):_ref_txt + 80] if _ref_txt > 0 else ""
+for _need in [".clip(", ".background(", ".border("]:
+    if _need not in _head:
+        print("[FAIL] 答案图：「见解析图」与图须包进**同一个块**（用户口径："
+              "把图片放在见解析图同一个块里面去），缺 %s 的容器就是裸图贴文字" % _need)
+        fail = True
+if _ri < _ref_txt:
+    print("[FAIL] 答案图：图须排在「见解析图」文字之后（现在顺序反了）")
+    fail = True
+
+# 5) 答案图不得再出现在 ParseBlock 里（v2.19.53：会和逐字浮现的文字叠在一起）
+_pb_i = _qb.index("fun ParseBlock(")
+_pb = _fn_body(_qb, "fun ParseBlock(")
+for _bad, _why in [
+    ("explanationImages", "答案图已改放 ShortReferenceCard，ParseBlock 不该再收图"),
+    ("ExpandableQuestionImage", "答案图已改放 ShortReferenceCard，ParseBlock 不该再画图"),
+]:
+    if _bad in _pb:
+        print("[FAIL] 答案图：ParseBlock 内仍有 %r —— %s" % (_bad, _why))
+        fail = True
+
+# 6) 解析默认折叠：autoOpen=false 是「作答前不剧透」的根基
+if "autoOpen: Boolean = false" not in _qb:
+    print("[FAIL] 解析：ParseBlock 的 autoOpen 默认值必须是 false——"
+          "解析默认折叠是「作答前不剧透」的根基，改成 true 等于把答案亮出来")
+    fail = True
+
+# 7) 两处 ShortReferenceCard 调用都要传答案图，否则简答/作图题永远看不到答案图
+for _f, _why in [
+    ("app/src/main/java/com/drone/quiz/screens/PracticeScreen.kt", "刷题"),
+    ("app/src/main/java/com/drone/quiz/screens/ExamScreens.kt", "模考"),
+]:
+    _c = load(_f)
+    if "referenceImages = q.explanationImages" not in _c:
+        print("[FAIL] 答案图：%s（%s）调用 ShortReferenceCard 时没传 referenceImages" % (_f.split('/')[-1], _why))
+        fail = True
+    if "bankId = q.bankId" not in _c:
+        print("[FAIL] 答案图：%s（%s）没传 bankId（图片路径要靠它定位）" % (_f.split('/')[-1], _why))
+        fail = True
+
+# 8) 六处 ParseBlock 调用保持原状（共用组件收敛的架构不变量）
+for _f, _min in [
+    ("screens/PracticeScreen.kt", 4),
+    ("screens/ExamScreens.kt", 1),
+    ("screens/SearchScreen.kt", 1),
+]:
+    _c = load(_repo_root + "/app/src/main/java/com/drone/quiz/" + _f)
+    if _c.count("ParseBlock(") < _min:
+        print("[FAIL] %s 应经由共用的 ParseBlock 渲染解析（找到 %d 处，少于 %d）"
+              % (_f, _c.count("ParseBlock("), _min))
+        fail = True
+
+# 9) 导入规范必须讲清两列的区别（写在提示词/模板里，不在 App 界面摆说明）
+if "解析图片" not in _bi:
+    print("[FAIL] 答案图：导入模板/提示词里没有「解析图片」的说明")
+    fail = True
+if "解析默认" not in _bi and "默认是折叠" not in _bi:
+    print("[FAIL] 答案图：导入规范必须写明「解析默认折叠、用户主动展开才看到」")
+    fail = True
+
+# 10) 模板表头必须同时有「图片」和「解析图片」两列，且不能合成一列
+_tpl = ""
+for _line in _bi.split("\n"):
+    if _line.startswith("题号,题型,题干"):
+        _tpl = _line
+        break
+if _tpl:
+    _cols = _tpl.split(",")
+    if "图片" not in _cols or "解析图片" not in _cols:
+        print("[FAIL] 答案图：CSV 模板表头须同时含「图片」和「解析图片」两列，实际：%r" % _tpl)
+        fail = True
+    if _cols.count("解析图片") != 1:
+        print("[FAIL] 答案图：CSV 模板表头里「解析图片」列应恰好 1 个")
+        fail = True
+else:
+    print("[FAIL] 答案图：找不到 CSV 模板表头")
+    fail = True
+
+# ── 首页图表卡：练习/模考切换（v2.19.53）───────────────────────────
+# 用户口径：两个并排的分段开关要 132dp，这卡横向宽度不够（挤到图例、挤到标题）。
+# 收成**单个按钮**，点一下在练习 ⇄ 模考之间翻面，挪到标题行右侧。
+_hm = load("app/src/main/java/com/drone/quiz/screens/HomeScreen.kt")
+_hs_i = _hm.index("private fun ChartModeSwitch(")
+_hs = _fn_body(_hm, "private fun ChartModeSwitch(")
+for _bad, _why in [
+    ("animateDpAsState", "不许再做成左右滑动的分段开关（宽度不够）"),
+    (".weight(1f)", "不该再有左右两个可点的分段"),
+    ("listOf(\"练习\", \"模考\")", "不该再并排渲染两个标签"),
+]:
+    if _bad in _hs:
+        print("[FAIL] 图表切换：ChartModeSwitch 内仍有 %r —— %s" % (_bad, _why))
+        fail = True
+for _must, _why in [
+    ("onChange(!examMode)", "单个按钮点一下翻面"),
+    ('if (examMode) "模考" else "练习"', "按钮上要显示当前模式"),
+]:
+    if _must not in _hs:
+        print("[FAIL] 图表切换：ChartModeSwitch 缺 %r —— %s" % (_must, _why))
+        fail = True
+# 按钮必须在标题行里（图例已下移一行）
+_hm_call = _hm.index("ChartModeSwitch(")
+_hm_title = _hm.rindex('if (examMode) "模考走势" else "近 7 天练习"', 0, _hm_call)
+_hm_legend = _hm.index('" 正确率"', _hm_call)
+if not (_hm_title < _hm_call < _hm_legend):
+    print("[FAIL] 图表切换：按钮必须在标题行右侧、图例之前（用户口径：移到右上角）")
+    fail = True
+
+# （新检查段请加在这段注释上方。）
+# ============================================================
+__exit_stmt = "sys.exit(1 if fail else 0)"
+_lines = open(__file__, encoding="utf-8").read().split("\n")
+_hits = [i for i, l in enumerate(_lines) if l.strip() == __exit_stmt]
+if len(_hits) != 1:
+    print(f"[FAIL] static_check.py 里有 {len(_hits)} 处退出语句（应恰好 1 处）。"
+          "出现多处说明有人把检查段加到了出口之后，那些段不会执行。")
+    sys.exit(1)
+if _hits[0] != len(_lines) - 2:
+    print(f"[FAIL] static_check.py 的退出语句不在末尾（行 {_hits[0]+1}/{len(_lines)}）——"
+          "它之后的代码都是死代码，检查会永远 PASS。请把新增段加到出口之前。")
+    sys.exit(1)
 
 print("PASS" if not fail else "STATIC CHECK FAILED")
 sys.exit(1 if fail else 0)

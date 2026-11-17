@@ -41,7 +41,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import com.drone.quiz.screens.common.JudgeBadgeGlyph
+import com.drone.quiz.screens.common.ParseBlock
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -50,7 +54,6 @@ import com.drone.quiz.data.repo.Question
 import com.drone.quiz.data.repo.optionLabel
 import kotlinx.coroutines.flow.first
 import com.drone.quiz.screens.common.TagChip
-import com.drone.quiz.screens.common.ParseBlock
 import com.drone.quiz.screens.common.displayCategory
 import com.drone.quiz.screens.common.rememberBankName
 import com.drone.quiz.screens.common.heroSearchField
@@ -64,6 +67,20 @@ import com.drone.quiz.ui.theme.LocalUi
 import com.kyant.backdrop.Backdrop
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.compose.animation.core.Animatable
+
+import androidx.compose.animation.core.FastOutSlowInEasing
+
+import androidx.compose.animation.core.tween
+
+import androidx.compose.ui.draw.blur
+
+import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.graphicsLayer
+
+import androidx.compose.foundation.lazy.itemsIndexed
+
 
 /**
  * 题目搜索页：题干 / 选项 / 解析 全文检索（防抖 300ms，最多返回 80 条）。
@@ -77,8 +94,7 @@ import kotlinx.coroutines.launch
 fun SearchScreen(
     backdrop: Backdrop,
     initialQuery: String = "",
-    onBack: () -> Unit,
-    onOpenCapture: () -> Unit
+    onBack: () -> Unit
 ) {
     val ui = LocalUi.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -179,12 +195,7 @@ fun SearchScreen(
                     }
                 }
             }
-            // 拍照搜题入口：搜索的另一种输入方式（直连自建相机页，取景框引导）
-            GlassIconButton(
-                onClick = onOpenCapture,
-                backdrop = backdrop,
-                icon = AppIcons.Camera
-            )
+            // v2.17.0：拍照搜题下线，搜索框右侧的相机入口随之移除。
         }
 
         // ---- 结果列表 ----
@@ -266,9 +277,13 @@ fun SearchScreen(
                     )
                 }
             }
-            items(results, key = { it.id }) { q ->
+            // v2.19.39：逐条渐入。错峰延迟 + alpha 0→1 + blur 12→0，三个并行，
+            // 一条一条从上往下接力（用户口径：「依次从上到下，一个一个显示出来」）。
+            // 见 SearchResultItem 内的 revealProgress——这里只传下标。
+            itemsIndexed(results, key = { _, it -> it.id }) { idx, q ->
                 SearchResultItem(
                     q = q,
+                    index = idx,
                     expanded = expandedId == q.id,
                     backdrop = backdrop,
                     onClick = { expandedId = if (expandedId == q.id) null else q.id }
@@ -283,11 +298,57 @@ fun SearchScreen(
 @Composable
 private fun SearchResultItem(
     q: Question,
+    index: Int,
     expanded: Boolean,
     backdrop: Backdrop,
     onClick: () -> Unit
 ) {
     val ui = LocalUi.current
+
+    // v2.19.39 逐条进场。
+    //
+    // 三件事**并行**跑（用户口径）：alpha 从 0 到 1、blur 从 12dp 到 0、
+    // 整卡从 translateY(14.dp) 归零。blur 让文字"从模糊里长出来"，
+    // 比单纯淡入有质感得多。
+    //
+    // 关键取舍：**blur 不能挂在 GlassCard 的 Modifier 上**。玻璃卡的折射
+    // (drawBackdrop) 需要读它背后的内容，若自身被 blur，折射源与渲染目标
+    // 重叠，会出现边缘发虚/采样错位。所以 blur + alpha 走外层 Box 的
+    // graphicsLayer，GlassCard 保持干净——折射照常，只让整卡看起来在"浮现"。
+    //
+    // 错峰：每条延后 index * 55ms，上限 12 条（再往后就等太久了，用户会以为卡住）。
+    // 用 Animatable 而非 animate*AsState，因为要"延迟启动 + 可被打断"。
+    val progress = remember(q.id) { Animatable(0f) }
+    LaunchedEffect(q.id) {
+        val delayMs = (index * 55L).coerceAtMost(12 * 55L)
+        if (delayMs > 0) kotlinx.coroutines.delay(delayMs)
+        progress.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = 420, easing = FastOutSlowInEasing)
+        )
+    }
+    val p = progress.value
+
+
+    Box(
+        Modifier.graphicsLayer {
+            alpha = p
+            // blur 每帧新建 BlurEffect 有分配开销，但只在这 420ms 里、且仅可见条目，
+            // 可接受；p≈1 时直接不挂，省掉稳态开销。
+            if (p < 0.995f) {
+                // radiusX/Y 是 **px(Float)**，不是 Dp——12dp 先转 px 再随进度收拢。
+                // 本版 Compose 的 BlurEffect 只有 (x, y, TileMode) 签名，
+                // 没有 BlurEdgeTreatment 参数（那是更晚版本才加的边缘策略）。
+                // TileMode.Clamp 即"边缘延展"，卡片渐显时不会露出透明边——
+                // 正是这里要的效果。
+                val r = 12.dp.toPx() * (1f - p)
+                renderEffect = BlurEffect(r, r, TileMode.Clamp)
+            } else {
+                renderEffect = null
+            }
+            translationY = 14.dp.toPx() * (1f - p)
+        }
+    ) {
     GlassCard(
         backdrop = backdrop,
         modifier = Modifier
@@ -301,10 +362,16 @@ private fun SearchResultItem(
                 TagChip(displayCategory(q.category, rememberBankName(q.bankId)))
                 Spacer(Modifier.width(6.dp))
                 TagChip(com.drone.quiz.data.repo.QuestionTypes.label(q.type))
-                Spacer(Modifier.weight(1f))
+                // v2.19.36：折叠态只给字母。原样带全文有两个问题：
+                //   ① 与展开后的选项列表重复抄了一遍；
+                //   ② 选项文字长时不换行，把整张卡片横向撑高、行高暴涨。
+                // 折叠态只显示题干、选项要点开才看得到——所以这里留字母做"这条是答案"的
+                // 提示是必要的（否则用户搜出来看不出哪题对），但全文交给展开区去显示。
                 Text(
-                    "正确答案：${q.correctAnswerText()}",
-                    color = ui.correct, fontSize = 11.sp, fontWeight = FontWeight.SemiBold
+                    "正确答案：${q.correctAnswerText(brief = true)}",
+                    color = ui.correct, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false).padding(start = 8.dp)
                 )
             }
             Text(
@@ -354,13 +421,29 @@ private fun SearchResultItem(
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
+                                // 判断题与刷题页同样用自绘 √/×：系统字符 √ 是根号、字重随字体变，
+                                // 视觉重量对不上（v2.19.16 的结论，此处一并对齐）
+                                if (q.isJudge) {
+                                    JudgeBadgeGlyph(
+                                        isCheck = (i == 0) == isAnswer,
+                                        color = if (isAnswer) Color.White else ui.textSub
+                                    )
+                                    return@Box
+                                }
                                 // v2.7.2 修复：正确项绿底上字母原先是绿色（同色隐形），
                                 // 用户反馈"绿色选项里 ABC 不显示"——改白字
                                 Text(
                                     optionLabel(i, q.isJudge),
                                     color = if (isAnswer) Color.White else ui.textSub,
                                     fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold
+                                    // 行盒收到与字号相同 + 关掉系统字体的额外行距——
+                                    // 否则字形在圆圈里偏下（v2.19.16 在 QuestionBody 修过一次，
+                                    // 搜索页这处是同一段代码的另一份拷贝，当时漏了）
+                                    lineHeight = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    style = TextStyle(
+                                        platformStyle = PlatformTextStyle(includeFontPadding = false)
+                                    )
                                 )
                             }
                             Text(
@@ -374,9 +457,6 @@ private fun SearchResultItem(
                             )
                         }
                     }
-                    if (q.explanation.isNotBlank()) {
-                        ParseBlock(q.explanation)
-                    }
                 }
             }
             if (!expanded) {
@@ -386,6 +466,11 @@ private fun SearchResultItem(
                     modifier = Modifier.padding(top = 6.dp)
                 )
             }
+
+            // 解析交给共用的 ParseBlock：默认折叠、点开逐字「对焦」揭示。
+            // 与刷题页/模考页/错题本完全同一套观感与交互，全 app 只此一份实现。
+            ParseBlock(q.explanation, autoOpen = true)
         }
+    }
     }
 }

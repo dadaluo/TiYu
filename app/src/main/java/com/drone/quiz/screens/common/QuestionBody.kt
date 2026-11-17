@@ -1,7 +1,15 @@
 package com.drone.quiz.screens.common
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -20,36 +28,61 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.ExperimentalTextApi
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.unit.sp
+import com.drone.quiz.data.repo.JUDGE_CHECK
+import com.drone.quiz.data.repo.JUDGE_CROSS
 import com.drone.quiz.data.repo.Question
 import com.drone.quiz.data.repo.QuestionImages
 import com.drone.quiz.data.repo.QuestionTypes
@@ -64,6 +97,9 @@ import com.kyant.backdrop.Backdrop
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
+import kotlin.math.pow
+import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 
 /**
  * 题型作答组件族（v2.8.0）：刷题页与模考页共用。
@@ -84,7 +120,11 @@ fun QuestionTypeTag(type: String) {
 fun OptionRow(
     label: String,
     text: String,
-    state: Int, // 0 默认 1 正确 2 误选
+    // 0 默认 / 1 正确 / 2 误选 / 3 已选中但**未判定**
+    // state 3 是 v2.19.22 加的：模考关掉「即时判定」时，点完选项 verdict 恒为 null，
+    // 若仍只用 0/1/2 则选中态会一并消失——点下去毫无反应，用户会以为选项点不动。
+    // 3 只表达"你选了这个"，**不泄露对错**，交卷判分口径不变。
+    state: Int,
     enabled: Boolean,
     onClick: () -> Unit
 ) {
@@ -123,20 +163,39 @@ fun OptionRow(
     }
 }
 
-/** 多选选项行：state 同 OptionRow；selected = 提交前已勾选；resultState ≥0 表示已提交。 */
+/**
+ * 多选选项行。
+ *
+ * **v2.19.23：resultState 扩到四态，并刻意不与 OptionRow 共用配色/标签。**
+ *   -1 未提交 · 0 无关（既没选也不是答案）· 1 正确（选了且命中）· 2 错选（选了但没命中）· 3 漏选（该选却没选）
+ *
+ * 旧版只有三态，且「是正确答案」一律记 1 —— 于是**漏选的项也显示"正确"**
+ * （用户反馈：选了 A、B、C 漏了 D，四个选项全标"正确"，完全看不出漏在哪）。
+ * 2 的文案也从"你选的"改成 **"错选"**（用户口径：漏选 / 错选 要能一眼分开）。
+ *
+ * ⚠️ 这里的 3 与 OptionRow 的 3 **语义不同**（那里是「已选中但未判定」）。
+ * 共用 optionColors/ResultTag 会把单选的"刚选中"显示成"漏选"，故各自配色各自标签。
+ */
 @Composable
 fun OptionToggleRow(
     label: String,
     text: String,
     selected: Boolean,
-    resultState: Int, // -1 未提交（勾选态），0/1/2 已提交
+    resultState: Int, // -1 未提交（勾选态），0/1/2/3 已提交
     enabled: Boolean,
     onToggle: () -> Unit
 ) {
     val ui = LocalUi.current
     val submitted = resultState >= 0
-    val (bg, borderColor) = if (submitted) optionColors(resultState)
-    else if (selected) ui.ink.copy(alpha = 0.10f) to ui.ink.copy(alpha = 0.35f)
+    val missed = submitted && resultState == 3
+    val (bg, borderColor) = if (submitted) when (resultState) {
+        1 -> ui.correct.copy(alpha = 0.16f) to ui.correct.copy(alpha = 0.5f)
+        2 -> ui.wrong.copy(alpha = 0.16f) to ui.wrong.copy(alpha = 0.5f)
+        // 漏选走 accent（琥珀）：它既是"该选的"又是"你没选的"，用绿会和"正确"混、
+        // 用红又会被误读成"你选错了"。琥珀是唯一的第三色。
+        3 -> ui.accent.copy(alpha = 0.12f) to ui.accent.copy(alpha = 0.55f)
+        else -> ui.ink.copy(alpha = 0.05f) to ui.ink.copy(alpha = 0.08f)
+    } else if (selected) ui.ink.copy(alpha = 0.10f) to ui.ink.copy(alpha = 0.35f)
     else ui.ink.copy(alpha = 0.05f) to ui.ink.copy(alpha = 0.08f)
     Row(
         Modifier
@@ -157,11 +216,16 @@ fun OptionToggleRow(
                     when {
                         submitted && resultState == 1 -> ui.correct
                         submitted && resultState == 2 -> ui.wrong
+                        missed -> ui.accent.copy(alpha = 0.18f)   // 空心琥珀：该勾没勾
                         selected -> ui.ink
                         else -> ui.ink.copy(alpha = 0.08f)
                     }
                 )
-                .border(1.dp, ui.ink.copy(alpha = 0.12f), RoundedCornerShape(8.dp)),
+                .border(
+                    1.dp,
+                    if (missed) ui.accent.copy(alpha = 0.55f) else ui.ink.copy(alpha = 0.12f),
+                    RoundedCornerShape(8.dp)
+                ),
             contentAlignment = Alignment.Center
         ) {
             if (selected || (submitted && resultState == 1)) {
@@ -181,13 +245,35 @@ fun OptionToggleRow(
                 .weight(1f)
                 .padding(horizontal = 10.dp)
         )
-        ResultTag(resultState.takeIf { submitted })
+        // 多选专用标签（不走 ResultTag：那里的 3 是"已选中未判定"，语义不同）
+        if (submitted) {
+            when (resultState) {
+                1 -> Text("正确", color = ui.correct, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                2 -> Text("错选", color = ui.wrong, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                3 -> Text("漏选", color = ui.accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+        }
     }
 }
 
+/**
+ * 选项圆标。
+ *
+ * **字母为什么看着偏下**：Android 的 `PlatformTextStyle.includeFontPadding` 默认是
+ * `true`——那是为中日韩字形预留的上下留白。圆标只有 24.dp，行盒被这层留白撑高后
+ * 再由 `contentAlignment = Center` 居中，于是**字形本身被整体压低了约半号**。
+ * 置 `includeFontPadding = false` 并把 `lineHeight` 收到与 `fontSize` 相同，
+ * 字形才真正落在圆心。
+ *
+ * **判断题的 √/× 自绘**（用户反馈系统字形太细、不好看）：
+ * 原先直接用字符 `√` / `×`，前者是根号而非对勾、后者字重也随系统字体而变。
+ * 现改为 Canvas 描边绘制：圆头圆角、粗细可控，两个符号视觉重量一致。
+ * ABCD 仍用默认字母，不自绘。
+ */
 @Composable
 private fun OptionBadge(label: String, state: Int) {
     val ui = LocalUi.current
+    val fg = if (state > 0) Color.White else ui.textSub
     Box(
         Modifier
             .size(24.dp)
@@ -196,20 +282,40 @@ private fun OptionBadge(label: String, state: Int) {
                 when (state) {
                     1 -> ui.correct
                     2 -> ui.wrong
+                    3 -> ui.ink                      // 已选中未判定：实心 ink 底 + 白字
                     else -> ui.ink.copy(alpha = 0.08f)
                 }
             ),
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            label,
-            color = if (state > 0) Color.White else ui.textSub,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold
-        )
+        when (label) {
+            JUDGE_CHECK -> JudgeBadgeGlyph(isCheck = true, color = fg)
+            JUDGE_CROSS -> JudgeBadgeGlyph(isCheck = false, color = fg)
+            else -> Text(
+                label,
+                color = fg,
+                fontSize = 11.sp,
+                // lineHeight 收到与 fontSize 相同，行盒不再被字体行高撑高
+                lineHeight = 11.sp,
+                fontWeight = FontWeight.Bold,
+                style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
+            )
+        }
     }
 }
 
+/**
+ * 判断题圆标：**自绘**的对勾 / 叉号。
+ *
+ * **为什么是填充多边形而不是描边折线**：v2.19.16 那一版用 `drawLine`/`drawPath`
+ * 手搓折线，坐标是凭感觉拍的，结果真机上是「极丑无比，而且还不居中」——
+ * 折线的**几何包围盒居中 ≠ 视觉重心居中**：勾形的长臂墨量远大于短臂，
+ * 整块墨的重心被拽到左下，看着就是歪的。描边还额外受 `stroke/2` 的圆头外扩影响。
+ *
+ * 现改为**填充多边形**，按 24 单位视口里的标准比例作图再等比缩放：
+ * 勾的墨迹在 x∈[3.4,21]、y∈[5.6,19]，叉在 x,y∈[5,19]，两者都以视口中心对称，
+ * 缩放后自然落在圆心，且笔画粗实、不受系统字重影响。
+ */
 @Composable
 private fun ResultTag(state: Int?) {
     val ui = LocalUi.current
@@ -225,6 +331,10 @@ private fun optionColors(state: Int): Pair<Color, Color> {
     return when (state) {
         1 -> ui.correct.copy(alpha = 0.14f) to ui.correct.copy(alpha = 0.6f)
         2 -> ui.wrong.copy(alpha = 0.14f) to ui.wrong.copy(alpha = 0.6f)
+        // 已选中未判定：走 ink 系而非绿/红，避免在关掉即时判定时提前泄露对错。
+        // 数值刻意与模考多选的"selected"分支保持一致（ui.ink 0.10 / 0.35），
+        // 两处视觉语言统一。
+        3 -> ui.ink.copy(alpha = 0.10f) to ui.ink.copy(alpha = 0.35f)
         else -> ui.ink.copy(alpha = 0.05f) to ui.ink.copy(alpha = 0.08f)
     }
 }
@@ -275,8 +385,25 @@ fun YourAnswerLine(text: String) {
     Text("你的答案：$text", color = ui.textSub, fontSize = 12.sp)
 }
 
+/**
+ * 解析块：**默认折叠**，展开时逐字「对焦」揭示（v2.19.40）。
+ *
+ * 全 app 唯一的解析组件——刷题（单选/多选/填空/简答）、模考、错题本、
+ * 搜索页共六处调用，全部走这里。想改解析的观感只改这一处。
+ *
+ * **容器外壳沿用原样**（圆角 + 淡底 + "解析"小标题），只换里面的呈现方式，
+ * 免得六处各自画一套、越改越不一致。
+ *
+ * **为什么默认折叠**（用户口径）：解析默认摊开时，眼睛在"确认对错"和
+ * "读长段讲解"之间来回跳，注意力被带跑。先把选项想完，需要时再点开。
+ *
+ * @param autoOpen 默认 false（折叠）。传 true 可让特定场景直接展开。
+ */
 @Composable
-fun ParseBlock(explanation: String) {
+fun ParseBlock(
+    explanation: String,
+    autoOpen: Boolean = false
+) {
     val ui = LocalUi.current
     val bodyStyle = TextStyle(
         color = ui.text,
@@ -284,6 +411,10 @@ fun ParseBlock(explanation: String) {
         lineHeight = 21.sp,
         fontFamily = LocalReadingFont.current
     )
+    val hasMarkdown = remember(explanation) { MARKDOWN_SYNTAX.containsMatchIn(explanation) }
+    var open by remember(explanation) { mutableStateOf(autoOpen) }
+    val hasText = explanation.isNotBlank()
+
     Column(
         Modifier
             .fillMaxWidth()
@@ -292,30 +423,293 @@ fun ParseBlock(explanation: String) {
             .background(ui.ink.copy(alpha = 0.05f))
             .padding(14.dp)
     ) {
-        Text("解析", color = ui.textSub, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-        Markdown(
-            content = explanation.ifBlank { "暂无解析" },
-            colors = markdownColor(text = ui.text),
-            typography = markdownTypography(
-                h1 = bodyStyle.copy(fontSize = 18.sp, fontWeight = FontWeight.Bold),
-                h2 = bodyStyle.copy(fontSize = 17.sp, fontWeight = FontWeight.Bold),
-                h3 = bodyStyle.copy(fontSize = 16.sp, fontWeight = FontWeight.Bold),
-                h4 = bodyStyle.copy(fontSize = 15.sp, fontWeight = FontWeight.Bold),
-                h5 = bodyStyle.copy(fontSize = 14.sp, fontWeight = FontWeight.Bold),
-                h6 = bodyStyle.copy(fontWeight = FontWeight.Bold),
-                text = bodyStyle,
-                paragraph = bodyStyle,
-                ordered = bodyStyle,
-                bullet = bodyStyle,
-                list = bodyStyle,
-                quote = bodyStyle
-            ),
-            modifier = Modifier
+        if (!hasText) {
+            Text("解析", color = ui.textSub, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            Text(
+                "暂无解析",
+                color = ui.text,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+            return@Column
+        }
+
+        // v2.19.42：标题行合并为一行（用户口径：「查看解析」和「解析」放在同一行，
+        // 「收起」也要跟「解析」在同一行）。
+        // 原来「解析」独占一行、下面再来一行按钮，既多占一行高度又显得松散。
+        Row(
+            Modifier
                 .fillMaxWidth()
-                .padding(top = 4.dp)
-        )
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(
+                    interactionSource = null,
+                    indication = null,
+                    onClick = { open = !open }
+                )
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "解析",
+                color = ui.textSub, fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                if (open) "收起" else "查看解析",
+                color = ui.textSub, fontSize = 12.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Icon(
+                AppIcons.ChevronRight,
+                null,
+                tint = ui.textSub,
+                modifier = Modifier
+                    .padding(start = 2.dp)
+                    .size(14.dp)
+                    .graphicsLayer { rotationZ = if (open) 90f else 0f }
+            )
+        }
+
+        AnimatedVisibility(
+            visible = open,
+            enter = expandVertically(tween(200)) + fadeIn(tween(160)),
+            exit = shrinkVertically(tween(180)) + fadeOut(tween(140))
+        ) {
+            if (hasMarkdown) {
+                Markdown(
+                    content = explanation,
+                    colors = markdownColor(text = ui.text),
+                    typography = markdownTypography(
+                        h1 = bodyStyle.copy(fontSize = 18.sp, fontWeight = FontWeight.Bold),
+                        h2 = bodyStyle.copy(fontSize = 17.sp, fontWeight = FontWeight.Bold),
+                        h3 = bodyStyle.copy(fontSize = 16.sp, fontWeight = FontWeight.Bold),
+                        h4 = bodyStyle.copy(fontSize = 15.sp, fontWeight = FontWeight.Bold),
+                        h5 = bodyStyle.copy(fontSize = 14.sp, fontWeight = FontWeight.Bold),
+                        h6 = bodyStyle.copy(fontWeight = FontWeight.Bold),
+                        text = bodyStyle,
+                        paragraph = bodyStyle,
+                        ordered = bodyStyle,
+                        bullet = bodyStyle,
+                        list = bodyStyle,
+                        quote = bodyStyle
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp)
+                )
+            } else {
+                RevealText(
+                    text = explanation,
+                    // 有图时给个短延迟：文字先逐字浮现，图随后淡入。
+                    // 图没法参与逐字动画，硬一起播会显得突兀。
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+        }
     }
 }
+
+
+/**
+ * 逐字「对焦」揭示（v2.19.46 重写）。
+ *
+ * 观感规格（与产品页 demo 同源）：每个字从「完全透明 + 3px 模糊」开始，
+ * 在 [ENTRY_MS] 内一边淡入一边变清晰。透明度线性，模糊走 easeOut 提前收干净
+ * ——若两者同步结束，最后一点模糊会落在已满不透明度的字上，
+ *   读起来是脏点而不是「对焦」。
+ *
+ * ── v2.19.42 为什么还是错的（用户实机反馈：「同一行不在一行里面」）──
+ *
+ * 那一版把每个字做成独立 `Text`，再用
+ * `Modifier.offset { IntOffset(layout.getHorizontalPosition(i), ...) }`
+ * 手工把它挪到「它在全文排版里的位置」。
+ *
+ * 问题在于那条链路有三处对不上：
+ * · **已完成的字画在 Canvas 里，尾段的字是 Text 节点——两者是两套独立排版。**
+ *   前缀子串的换行位置与全文不同（例：全文 "AAA BBB" 在第 6 字后换行，
+ *   前缀 "AAA B" 单独排版时可能让第 6 字挤在行尾），于是 Canvas 的字
+ *   和 Text 的字**横向对不齐**。
+ * · `getHorizontalPosition` 给的是 advance（字形推进量），单字 Text 盒子的
+ *   内边距/字距与之不等，累积后整段字间距忽宽忽窄。
+ * · 每个字独占一行测量，纵向基线随单字盒子的 lineHeight 重算，
+ *   于是「同一行」的字**高低错落**——这就是用户看到的现象，
+ *   甚至伴随字符被跳过（「对流层顶至55km高度」后面直接跳到「下为平」，
+ *   中间的「以」不见了）。
+ *
+ * ── 现在的做法 ──
+ *
+ * **整段文本用同一个 `Text` 节点**。已完成的字是普通文本；正在入场的
+ * 那几个字通过 `InlineTextContent` 挂上各自的 alpha 与 BlurEffect。
+ *
+ * 这样做的关键在于：inline content 的**排版位置由 Compose 的文本布局自己算**，
+ * 换行、行高、字距、基线全部与其他文字同源，不可能对不齐。
+ * 容器高度也由 Text 自然撑开——不需要再去推算「已经渲染到第几行」。
+ */
+// Block and inline Markdown keep their complete layout; plain text retains focus reveal.
+private val MARKDOWN_SYNTAX = Regex(
+    """(?m)^ {0,3}(?:#{1,6}\s|>\s?|[-+*]\s|\d+[.)]\s|```|~~~|(?:[-*_]\s*){3,}$)|\*\*[^*]+\*\*|__[^_]+__|\*[^*\n]+\*|_[^_\n]+_|`[^`\n]+`|!?\[[^]\n]+]\([^)]+\)|~~[^~]+~~"""
+)
+
+private const val REVEAL_CPS = 67f              // 字/秒（20→36→56→67，用户三次嫌慢）
+private const val ENTRY_MS = 340f                // 单字入场时长（用户要求渐显/模糊周期更长）
+private const val BLUR_PX = 6.5f                 // 起始模糊半径
+private const val TAIL_WINDOW = 26               // 同时可能在入场的字数上限（340ms / 14.9ms ≈ 23，留 3 个余量）
+
+/** 第 i 个字的到达时刻（ms） */
+private fun arrivalOf(i: Int) = i * (1000f / REVEAL_CPS)
+
+/**
+ * 模糊随进度的衰减（v2.19.49 重写）。
+ *
+ * 之前用的是 `1 - easeOut(p)`，展开就是 **(1-p)²** —— 一条**急减速**曲线：
+ * 模糊在字还几乎看不见的时候（alpha≈0.2）就已经掉到 1.9px，等 alpha 爬到
+ * 0.5、一双眼睛终于能看清它时，模糊只剩 0.75px。对 13sp（约 26px 高）的字
+ * 来说那是字高的 2.9%，肉眼基本无感——用户反馈「模糊感觉不明显」正是这个。
+ *
+ * 换成 **1 - p^0.55**：慢启动、后段陡收。
+ *   p=0.3 → 3.15px（字高 12%）：刚能看清时，明确看得出是糊的
+ *   p=0.6 → 1.59px（6%）      ：仍在对焦
+ *   p=0.9 → 0.37px             ：收尾
+ *   p=1   → 0                  ：**精确归零**，不会停在非 0 留脏点
+ *
+ * 关键在于模糊现在覆盖了「字真正可见」的整段，而不是抢在可见之前烧完。
+ * 透明度仍走线性——线性才是「渐显」该有的匀速感。
+ */
+private fun blurOf(p: Float): Float {
+    val t = p.coerceIn(0f, 1f)
+    return BLUR_PX * (1f - t.pow(0.55f))
+}
+
+@Composable
+private fun RevealText(text: String, modifier: Modifier = Modifier) {
+    val ui = LocalUi.current
+    @OptIn(ExperimentalTextApi::class)
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val readingFont = LocalReadingFont.current
+    val style = remember(ui.text, readingFont) {
+        TextStyle(fontSize = 13.sp, lineHeight = 21.sp, color = ui.text, fontFamily = readingFont)
+    }
+
+    val n = text.length
+    if (n == 0) return
+
+    // ---- 动画时钟：由帧回调驱动，不在组合期读系统时钟 ----
+    var frameMs by remember(text) { mutableFloatStateOf(0f) }
+    val totalMs = arrivalOf(n - 1) + ENTRY_MS
+    LaunchedEffect(text) {
+        val t0 = withFrameNanos { it }
+        while (true) {
+            val elapsed = (withFrameNanos { it } - t0) / 1_000_000f
+            // 停止条件是「最后一个字走完入场」，不是「最后一个字出现」
+            if (elapsed >= totalMs) { frameMs = totalMs; break }
+            frameMs = elapsed
+        }
+    }
+
+    // ---- 哪些字已经到达 ----
+    val arrived = ((frameMs / (1000f / REVEAL_CPS)).toInt() + 1).coerceIn(0, n)
+    val last = arrived - 1
+    val tailStart = (last - (TAIL_WINDOW - 1)).coerceAtLeast(0)
+    val tailEnd = last
+
+    // ---- 前缀用普通文本，尾段逐字挂注解 ----
+    // 两者在**同一个 Text 节点**里合成，排版自然连续。
+    val annotated = remember(text, tailStart, tailEnd) {
+        buildAnnotatedString {
+            if (tailStart > 0) append(text.substring(0, tailStart))
+            for (i in tailStart..tailEnd) {
+                appendInlineContent(KEY_PREFIX + i, text.substring(i, i + 1))
+            }
+        }
+    }
+
+    // ── 纵向对齐（v2.19.47 修）────────────────────────────────────────
+    // 用户截图：正在动画的字**整体偏下**，与前后静止的字不在一条基线上。
+    //
+    // 根因是占位框与字盒子的**高度不同、参考系也不同**：
+    //   · 占位框 height 给的是 style.lineHeight(21sp)，而占位框用
+    //     TextCenter 对齐到「行的文字区域中心」；
+    //   · 框里渲染的 Text 盒子高也是 21sp，但它的基线 = 盒顶 + (lineHeight -
+    //     (ascent+descent))/2 + ascent。
+    // 两个参考系一减，恰好差出一个 descent —— 字整体下沉。
+    //
+    // 修法：让占位框与单字的**自然盒子**（不含 lineHeight）完全重合。
+    // 这样 TextCenter 对齐后框正好盖住文字区域，框内 Text 的基线自然与
+    // 同行其余文字一致。lineHeight 只影响行间距，不影响字形基线，
+    // 去掉它不影响观感。
+    val charStyle = remember(style) { style.copy(lineHeight = TextUnit.Unspecified) }
+
+    // 宽度：实测该字宽度 / 字号，再折成 sp（用 sp 才能跟随字号与字体缩放设置）
+    val widthCache = remember(text, charStyle, density) { HashMap<Char, Float>() }
+    fun ratioOfW(c: Char): Float = widthCache.getOrPut(c) {
+        val fontPx = with(density) { charStyle.fontSize.toPx() }
+        if (fontPx <= 0f) 1f
+        else {
+            val w = measurer.measure(
+                text = AnnotatedString(c.toString()), style = charStyle, constraints = Constraints()
+            ).size.width.toFloat()
+            // 量化到千分位，避免浮点尾差造成占位宽度抖动
+            Math.round(w / fontPx * 1000f) / 1000f
+        }
+    }
+    // 高度：单字自然盒高（ascent+descent），使占位框与字盒子严格重合
+    val heightCache = remember(text, charStyle, density) { HashMap<Char, Float>() }
+    fun ratioOfH(c: Char): Float = heightCache.getOrPut(c) {
+        val fontPx = with(density) { charStyle.fontSize.toPx() }
+        if (fontPx <= 0f) 1f
+        else {
+            val h = measurer.measure(
+                text = AnnotatedString(c.toString()), style = charStyle, constraints = Constraints()
+            ).size.height.toFloat()
+            Math.round(h / fontPx * 1000f) / 1000f
+        }
+    }
+
+    val inlineContent: Map<String, InlineTextContent> = remember(text, charStyle, tailStart, tailEnd, widthCache, heightCache) {
+        (tailStart..tailEnd).associate { i ->
+            val c = text[i]
+            // graphicsLayer 的 block 只在图层更新时执行，读 state 不触发重组，
+            // 所以逐帧进度仍然连续，而不必每帧重组整段文本。
+            KEY_PREFIX + i to InlineTextContent(
+                placeholder = Placeholder(
+                    // height 取该字实测高度：占位过高会撑开行高，
+                    // 让吐字过程中整段文字的纵向节奏跟着抖。
+                    width = (charStyle.fontSize.value * ratioOfW(c)).sp,
+                    height = (charStyle.fontSize.value * ratioOfH(c)).sp,
+                    placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter
+                )
+            ) {
+                Text(
+                    text = c.toString(),
+                    style = charStyle,
+                    modifier = Modifier.graphicsLayer {
+                        val p = ((frameMs - arrivalOf(i)) / ENTRY_MS).coerceIn(0f, 1f)
+                        val blur = blurOf(p)
+                        alpha = p
+                        // 阈值 1.0px：blur 降到字高的 3.8% 时肉眼已基本无感，
+                        // 却仍占着一个 RenderEffect 图层。入场周期拉长后同时在场
+                        // 的字多达 23 个，砍掉这批能省约四分之一的图层开销，
+                        // 而「对焦感」最明显的前 74% 进度完全保留。
+                        renderEffect = if (blur > 1f) {
+                            BlurEffect(blur, blur, TileMode.Clamp)
+                        } else null
+                    }
+                )
+            }
+        }
+    }
+
+    Text(
+        text = annotated,
+        style = style,
+        inlineContent = inlineContent,
+        modifier = modifier.fillMaxWidth()
+    )
+}
+
+private const val KEY_PREFIX = "c"
 
 // ---------- 题目图片（v2.8.5，ZIP 导入的带图题库） ----------
 
@@ -585,7 +979,12 @@ fun ShortReferenceCard(
     yourText: String,
     graded: Boolean,
     selfCorrect: Boolean?,
-    onGrade: (correct: Boolean) -> Unit
+    onGrade: (correct: Boolean) -> Unit,
+    // v2.19.53：答案图放这里，不再放解析里。
+    // 用户原话：作图题的答案本身就是图，放在「参考答案」这块（"见解析图"
+    // 文字下面）最自然；放解析里会跟逐字浮现的文字叠在一起。
+    referenceImages: List<String> = emptyList(),
+    bankId: String = ""
 ) {
     val ui = LocalUi.current
     Column(
@@ -597,13 +996,51 @@ fun ShortReferenceCard(
             .padding(14.dp)
     ) {
         Text("参考答案", color = ui.textSub, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-        Text(
-            reference,
-            color = ui.text,
-            fontSize = 13.sp,
-            lineHeight = 21.sp,
-            modifier = Modifier.padding(top = 4.dp)
-        )
+        // v2.19.53：带答案图时，「见解析图」这行文字和图合成**同一个块**。
+        // 之前是把图直接贴在文字下面，一眼看过去像两样不相干的东西；
+        // 用户口径是「把图片放在见解析图同一个块里面」——所以整个包进一个
+        // 容器，「见解析图」就是这块的标题，图是它的内容。
+        // 另外：这种题答案列几乎都是「见解析图」这类指向图的说法，
+        // 真正的解法文字在解析列里，所以**解析列不再放图**（避免与逐字
+        // 浮现的文字重叠，也免得作答前就在解析里露答案）。
+        if (referenceImages.isNotEmpty() && bankId.isNotBlank()) {
+            val context = LocalContext.current
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(ui.surface.copy(alpha = 0.55f))
+                    .border(
+                        1.dp,
+                        ui.ink.copy(alpha = 0.10f),
+                        RoundedCornerShape(12.dp)
+                    )
+                    .padding(10.dp)
+            ) {
+                Text(
+                    reference,
+                    color = ui.text,
+                    fontSize = 13.sp,
+                    lineHeight = 21.sp
+                )
+                referenceImages.forEach { name ->
+                    ExpandableQuestionImage(
+                        path = remember(bankId, name) {
+                            QuestionImages.resolve(context, bankId, name)
+                        }
+                    )
+                }
+            }
+        } else {
+            Text(
+                reference,
+                color = ui.text,
+                fontSize = 13.sp,
+                lineHeight = 21.sp,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
         if (yourText.isNotBlank()) {
             Text(
                 "你的回答：$yourText",
@@ -724,13 +1161,19 @@ fun WrongAnswerBlock(q: Question, userAnswer: String?) {
             )
         }
         Text(
-            "正确答案：${q.correctAnswerText()}",
+            "正确答案：${q.correctAnswerText(brief = true)}",
             color = ui.correct,
             fontSize = 12.sp,
             modifier = Modifier.padding(top = 4.dp)
         )
         if (q.explanation.isNotBlank()) {
-            ParseBlock(q.explanation)
+            Text(
+                q.explanation,
+                color = ui.textSub,
+                fontSize = 12.sp,
+                lineHeight = 18.sp,
+                modifier = Modifier.padding(top = 2.dp)
+            )
         }
     }
 }

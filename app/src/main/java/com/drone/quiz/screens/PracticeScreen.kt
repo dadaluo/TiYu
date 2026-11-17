@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.sp
 import com.drone.quiz.ServiceLocator
 import com.drone.quiz.data.repo.Question
 import com.drone.quiz.data.repo.QuestionTypes
+import com.drone.quiz.data.repo.pickedAnswerText
 import com.drone.quiz.data.repo.UserAnswer
 import com.drone.quiz.data.repo.judgeAnswer
 import com.drone.quiz.data.repo.isAnswered
@@ -69,6 +70,7 @@ import com.drone.quiz.screens.common.ParseBlock
 import com.drone.quiz.screens.common.OptionRow
 import com.drone.quiz.screens.common.OptionToggleRow
 import com.drone.quiz.screens.common.QuestionImageStrip
+import com.drone.quiz.screens.common.YourAnswerLine
 import com.drone.quiz.screens.common.QuestionTypeTag
 import com.drone.quiz.screens.common.ResultHeader
 import com.drone.quiz.screens.common.ShortDraftField
@@ -845,7 +847,7 @@ private fun ChoiceSection(q: Question, ua: UserAnswer?, onCommit: (UserAnswer) -
         Column(Modifier.padding(top = 16.dp)) {
             ResultHeader(
                 judgeAnswer(q, ua),
-                " · 正确答案：${q.correctAnswerText()}"
+                " · 正确答案：${q.correctAnswerText(brief = true)}"
             )
             ParseBlock(q.explanation)
         }
@@ -871,17 +873,26 @@ private fun MultiSection(q: Question, ua: UserAnswer?, backdrop: Backdrop, onCom
             color = ui.textSub, fontSize = 11.sp
         )
         q.options.forEachIndexed { i, opt ->
-            val resultState = if (!submitted) -1
-            else when {
-                i in q.multiAnswerSet -> 1
-                ua!!.picked?.let { it and (1 shl i) != 0 } == true -> 2
+            // v2.19.23 四态：旧版把"是正确答案"一律记 1，导致**漏选的项也显示"正确"**
+            // （用户反馈：勾了 A、B、C 漏了 D，四项全标"正确"，看不出漏在哪）。
+            // v2.19.24 崩溃修复：原来是 ua!!。这行在**选项渲染循环里**，
+            // 未作答（ua == null）时也会执行 —— 于是"滚到一道没答过的多选题"必崩。
+            // 根因是 v2.19.23 重构成四态时，把原本藏在 `else if (!submitted)` 分支里的
+            // ua!! 提到了循环顶部，**挪出了 submitted 的保护范围**。
+            // 触发路径：切题库 → details 清空 → 滚到多选题 → NPE。
+            val picked = ua?.picked?.let { it and (1 shl i) != 0 } == true
+            val isKey = i in q.multiAnswerSet
+            val resultState = if (!submitted) -1 else when {
+                picked && isKey -> 1      // 正确
+                picked -> 2               // 错选
+                isKey -> 3               // 漏选
                 else -> 0
             }
             OptionToggleRow(
                 label = optionLabel(i, false),
                 text = opt,
                 selected = if (submitted) {
-                    ua!!.picked?.let { it and (1 shl i) != 0 } == true
+                    ua?.picked?.let { it and (1 shl i) != 0 } == true
                 } else i in sel,
                 resultState = resultState,
                 enabled = !submitted,
@@ -908,7 +919,14 @@ private fun MultiSection(q: Question, ua: UserAnswer?, backdrop: Backdrop, onCom
     ) {
         Column(Modifier.padding(top = 16.dp)) {
             ResultHeader(judgeAnswer(q, ua))
-            CorrectAnswerLine(q.correctAnswerText())
+            // v2.19.23：多选必须先说清"你到底勾了哪几个"，否则用户无法定位失分点。
+            // 单选/判断不加这行——错在哪一项会直接红在选项上，无需再罗列一遍。
+            if (q.type == QuestionTypes.MULTI) {
+                // AnimatedVisibility 的 content 在**退出动画期间仍然组合**，
+                // 此时 visible 已为 false 而 ua 可能已是 null —— 不能用 ua!!
+                YourAnswerLine(pickedAnswerText(q.options, ua?.picked))
+            }
+            CorrectAnswerLine(q.correctAnswerText(brief = true))
             ParseBlock(q.explanation)
         }
     }
@@ -926,7 +944,7 @@ private fun BlankSection(q: Question, ua: UserAnswer?, backdrop: Backdrop, onCom
         // v2.8.3：题干内嵌输入（在 ____ 空位处直接点入），替代第一空/第二空分行
         BlankInlineFields(
             text = q.text,
-            values = if (submitted) ua!!.texts else texts,
+            values = if (submitted) ua?.texts ?: emptyList() else texts,
             onValueChange = { i, v -> texts = texts.toMutableList().also { it[i] = v } },
             enabled = !submitted,
             showResult = submitted,
@@ -948,7 +966,7 @@ private fun BlankSection(q: Question, ua: UserAnswer?, backdrop: Backdrop, onCom
         ) {
             Column(Modifier.padding(top = 16.dp)) {
                 ResultHeader(judgeAnswer(q, ua))
-                CorrectAnswerLine(q.correctAnswerText())
+                CorrectAnswerLine(q.correctAnswerText(brief = true))
                 ParseBlock(q.explanation)
             }
         }
@@ -963,7 +981,7 @@ private fun ShortSection(q: Question, ua: UserAnswer?, backdrop: Backdrop, onCom
     var draft by remember(q.id, submitted) { mutableStateOf("") }
     Column(Modifier.padding(top = 14.dp)) {
         ShortDraftField(
-            value = if (submitted) ua!!.text else draft,
+            value = if (submitted) ua?.text.orEmpty() else draft,
             onValueChange = { draft = it },
             enabled = !submitted
         )
@@ -984,11 +1002,13 @@ private fun ShortSection(q: Question, ua: UserAnswer?, backdrop: Backdrop, onCom
         } else {
             ShortReferenceCard(
                 reference = q.answerText,
-                yourText = ua!!.text,
-                graded = ua.graded,
-                selfCorrect = if (ua.graded) ua.picked == 1 else null,
+                yourText = ua?.text.orEmpty(),
+                graded = ua?.graded == true,
+                selfCorrect = if (ua?.graded == true) ua.picked == 1 else null,
+                referenceImages = q.explanationImages,
+                bankId = q.bankId,
                 onGrade = { correct ->
-                    onCommit(ua.copy(picked = if (correct) 1 else 0, graded = true))
+                    onCommit((ua ?: UserAnswer()).copy(picked = if (correct) 1 else 0, graded = true))
                 }
             )
             // v2.8.3：自评后判定+解析丝滑展开
